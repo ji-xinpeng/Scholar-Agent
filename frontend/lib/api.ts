@@ -1,0 +1,166 @@
+const API_BASE = "http://localhost:8088/api/v1";
+
+// ========== 聊天 / 会话 ==========
+export async function fetchSSEChat(
+  message: string,
+  sessionId: string | null,
+  mode: string,
+  webSearch: boolean,
+  onEvent: (event: { type: string; data: any }) => void,
+  onDone: () => void,
+): Promise<string | null> {
+  const res = await fetch(`${API_BASE}/chat/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+      user_id: "default",
+      mode,
+      web_search: webSearch,
+    }),
+  });
+
+  // 处理 402 余额不足等错误
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: { message: "请求失败" } }));
+    onDone();
+    const error: any = new Error(err.detail?.message || "请求失败");
+    error.status = res.status;
+    error.detail = err.detail;
+    throw error;
+  }
+
+  const newSessionId = res.headers.get("X-Session-Id");
+  if (!res.body) {
+    onDone();
+    return newSessionId;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() || "";
+
+    for (const part of parts) {
+      const lines = part.split("\n");
+      let eventType = "";
+      let data = "";
+      for (const line of lines) {
+        if (line.startsWith("event: ")) eventType = line.slice(7);
+        if (line.startsWith("data: ")) data = line.slice(6);
+      }
+      if (eventType && data) {
+        try {
+          onEvent({ type: eventType, data: JSON.parse(data) });
+        } catch {}
+      }
+    }
+  }
+  onDone();
+  return newSessionId;
+}
+
+export async function getSessions(userId = "default") {
+  const res = await fetch(`${API_BASE}/chat/sessions?user_id=${userId}`);
+  return res.json();
+}
+
+export async function createSession(userId = "default", mode = "normal") {
+  const res = await fetch(`${API_BASE}/chat/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, title: "新建对话", mode }),
+  });
+  return res.json();
+}
+
+export async function deleteSession(sessionId: string) {
+  await fetch(`${API_BASE}/chat/sessions/${sessionId}`, { method: "DELETE" });
+}
+
+export async function getMessages(sessionId: string) {
+  const res = await fetch(`${API_BASE}/chat/sessions/${sessionId}/messages`);
+  return res.json();
+}
+
+// ========== 文档 ==========
+export async function uploadDocument(file: File, folderId?: string) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("user_id", "default");
+  if (folderId) formData.append("folder_id", folderId);
+  const res = await fetch(`${API_BASE}/documents/upload`, { method: "POST", body: formData });
+  return res.json();
+}
+
+export async function getDocuments(page = 1, pageSize = 10, folderId?: string) {
+  let url = `${API_BASE}/documents/?user_id=default&page=${page}&page_size=${pageSize}`;
+  if (folderId) url += `&folder_id=${folderId}`;
+  const res = await fetch(url);
+  return res.json();
+}
+
+export async function deleteDocument(docId: string) {
+  await fetch(`${API_BASE}/documents/${docId}`, { method: "DELETE" });
+}
+
+export async function createFolder(name: string, parentId?: string) {
+  const res = await fetch(`${API_BASE}/documents/folders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: "default", name, parent_id: parentId || null }),
+  });
+  return res.json();
+}
+
+export async function getFolders() {
+  const res = await fetch(`${API_BASE}/documents/folders/list?user_id=default`);
+  return res.json();
+}
+
+export async function deleteFolder(folderId: string) {
+  await fetch(`${API_BASE}/documents/folders/${folderId}`, { method: "DELETE" });
+}
+
+// ========== 用户 ==========
+export async function getProfile(userId = "default") {
+  const res = await fetch(`${API_BASE}/users/profile?user_id=${userId}`);
+  return res.json();
+}
+
+export async function updateProfile(data: Record<string, any>, userId = "default") {
+  const res = await fetch(`${API_BASE}/users/profile?user_id=${userId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+export async function recharge(amount: number, userId = "default") {
+  const res = await fetch(`${API_BASE}/users/recharge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, amount }),
+  });
+  return res.json();
+}
+
+// ========== 费用 ==========
+export async function getUsageStats(userId = "default") {
+  const res = await fetch(`${API_BASE}/users/usage?user_id=${userId}`);
+  return res.json();
+}
+
+export async function getUsageRecords(userId = "default", page = 1, pageSize = 20) {
+  const res = await fetch(`${API_BASE}/users/usage/records?user_id=${userId}&page=${page}&page_size=${pageSize}`);
+  return res.json();
+}

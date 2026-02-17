@@ -1,0 +1,68 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground: #1a1a2e;
+  --background: #f8f9fb;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* Input field style */
+.input-field {
+  @apply w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none transition-colors;
+  @apply focus:border-indigo-400 focus:ring-1 focus:ring-indigo-200;
+}
+
+textarea.input-field {
+  @apply resize-none;
+}
+
+/* Animation */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* Prose override for chat messages */
+.prose h3 {
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.prose h4 {
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.prose strong {
+  font-weight: 600;
+}
+.prose li {
+  margin-left: 1rem;
+  list-style-type: disc;
+}
