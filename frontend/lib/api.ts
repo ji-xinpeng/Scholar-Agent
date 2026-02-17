@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:8088/api/v1";
+const API_BASE = "/api/v1";
 
 // ========== 聊天 / 会话 ==========
 export async function fetchSSEChat(
