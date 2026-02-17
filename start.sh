@@ -41,7 +41,7 @@ echo "======================================"
 echo ""
 
 # 等待用户中断
-trap "echo ''; echo '🛑 正在停止...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; echo '✅ 已停止'; exit" INT TERM
+trap "echo ''; echo '正在停止...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; echo '已停止'; exit" INT TERM
 
 # 保持脚本运行
 wait
