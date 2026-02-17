@@ -6,10 +6,45 @@ echo "======================================"
 
 PROJECT_DIR=$(pwd)
 
+install_nvm_and_node() {
+    echo ""
+    echo "正在安装 NVM (Node Version Manager)..."
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+    
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+    
+    echo ""
+    echo "正在安装 Node.js LTS 版本..."
+    nvm install --lts
+    nvm use --lts
+    
+    echo ""
+    echo "Node.js 安装完成！"
+    node -v
+    npm -v
+}
+
 echo ""
 echo "1. 检查环境..."
 command -v python3 >/dev/null 2>&1 || { echo "需要安装 Python3"; exit 1; }
-command -v npm >/dev/null 2>&1 || { echo "需要安装 Node.js 和 npm"; exit 1; }
+
+if ! command -v npm >/dev/null 2>&1; then
+    echo "未检测到 Node.js 和 npm"
+    read -p "是否自动安装 Node.js 和 npm? (y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        install_nvm_and_node
+    else
+        echo "请手动安装 Node.js 和 npm 后重新运行此脚本"
+        exit 1
+    fi
+fi
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
 command -v pm2 >/dev/null 2>&1 || { echo "正在安装 PM2..."; npm install -g pm2; }
 
 echo ""
