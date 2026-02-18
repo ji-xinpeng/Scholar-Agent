@@ -8,17 +8,23 @@ export async function fetchSSEChat(
   webSearch: boolean,
   onEvent: (event: { type: string; data: any }) => void,
   onDone: () => void,
+  documentIds?: string[],
 ): Promise<string | null> {
+  const body: any = {
+    message,
+    session_id: sessionId,
+    user_id: "default",
+    mode,
+    web_search: webSearch,
+  };
+  if (documentIds && documentIds.length > 0) {
+    body.document_ids = documentIds;
+  }
+  
   const res = await fetch(`${API_BASE}/chat/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      session_id: sessionId,
-      user_id: "default",
-      mode,
-      web_search: webSearch,
-    }),
+    body: JSON.stringify(body),
   });
 
   // 处理 402 余额不足等错误
@@ -110,6 +116,11 @@ export async function getDocuments(page = 1, pageSize = 10, folderId?: string) {
 
 export async function deleteDocument(docId: string) {
   await fetch(`${API_BASE}/documents/${docId}`, { method: "DELETE" });
+}
+
+export async function getDocumentContent(docId: string) {
+  const res = await fetch(`${API_BASE}/documents/${docId}/content`);
+  return res.json();
 }
 
 export async function createFolder(name: string, parentId?: string) {

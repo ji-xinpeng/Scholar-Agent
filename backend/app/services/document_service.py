@@ -5,6 +5,21 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.logger import logger
+
+try:
+    import PyPDF2
+    HAS_PDF = True
+except ImportError:
+    HAS_PDF = False
+    logger.warning("PyPDF2 not installed, PDF parsing disabled")
+
+try:
+    from docx import Document
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+    logger.warning("python-docx not installed, DOCX parsing disabled")
 
 
 class DocumentService:
@@ -112,6 +127,42 @@ class DocumentService:
         db.commit()
         return True
 
+
+    def get_document_content(self, doc_id: str) -> Optional[str]:
+        doc = self.get_document(doc_id)
+        if not doc:
+            return None
+        
+        file_path = doc["file_path"]
+        if not os.path.exists(file_path):
+            return None
+        
+        file_type = doc["file_type"]
+        content = ""
+        
+        try:
+            if file_type == "pdf" and HAS_PDF:
+                with open(file_path, "rb") as f:
+                    pdf_reader = PyPDF2.PdfReader(f)
+                    for page in pdf_reader.pages:
+                        text = page.extract_text()
+                        if text:
+                            content += text + "\n"
+            elif file_type == "word" and HAS_DOCX:
+                docx = Document(file_path)
+                for para in docx.paragraphs:
+                    content += para.text + "\n"
+            elif file_type in ["markdown", "text"]:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            else:
+                logger.warning(f"Unsupported file type: {file_type}")
+                return None
+        except Exception as e:
+            logger.error(f"Error reading document {doc_id}: {e}")
+            return None
+        
+        return content
 
     async def parse_document(self, doc_id: str) -> bool:
 

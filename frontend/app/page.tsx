@@ -1,17 +1,37 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Send, Globe, Zap, ImagePlus, Sparkles, AlertCircle } from "lucide-react";
+import { 
+  Send, Globe, Zap, ImagePlus, Sparkles, AlertCircle,
+  Upload, FolderPlus, Trash2, FileText, File, FolderOpen,
+  ChevronLeft, ChevronRight, Search, Folder, Paperclip,
+  X
+} from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ChatMessage from "@/components/ChatMessage";
 import TaskProgress, { TaskStep } from "@/components/TaskProgress";
-import { fetchSSEChat, getMessages, getUsageStats } from "@/lib/api";
+import { 
+  fetchSSEChat, getMessages, 
+  uploadDocument, getDocuments, deleteDocument,
+  createFolder, getFolders, deleteFolder,
+  getDocumentContent
+} from "@/lib/api";
+import { formatFileSize, formatDate } from "@/lib/utils";
 
 interface Msg {
   id?: string;
   role: "user" | "assistant";
   content: string;
-  image?: string; // base64 图片预览
+  image?: string;
+  attachments?: any[];
+}
+
+interface Attachment {
+  id: string;
+  file: File;
+  preview?: string;
+  uploading: boolean;
+  docId?: string;
 }
 
 export default function ChatPage() {
@@ -26,11 +46,32 @@ export default function ChatPage() {
   const [streamingContent, setStreamingContent] = useState("");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const [lastCost, setLastCost] = useState<{cost: number; balance: number} | null>(null);
   const [costError, setCostError] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [folders, setFolders] = useState<any[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [docPage, setDocPage] = useState(1);
+  const [docTotal, setDocTotal] = useState(0);
+  const [docPageSize] = useState(10);
+  const [docUploading, setDocUploading] = useState(false);
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [docSearchQuery, setDocSearchQuery] = useState("");
+
+  const [selectedDoc, setSelectedDoc] = useState<any>(null);
+  const [docContent, setDocContent] = useState<string | null>(null);
+  const [docLoading, setDocLoading] = useState(false);
+
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const docFileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = useCallback(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -39,6 +80,20 @@ export default function ChatPage() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, streamingContent, taskSteps, showTaskSteps, scrollToBottom]);
+
+  const loadDocuments = async () => {
+    try {
+      const [docsRes, foldersRes] = await Promise.all([
+        getDocuments(docPage, docPageSize, selectedFolder || undefined),
+        getFolders(),
+      ]);
+      setDocuments(docsRes.documents || []);
+      setDocTotal(docsRes.total || 0);
+      setFolders(foldersRes.folders || []);
+    } catch {}
+  };
+
+  useEffect(() => { loadDocuments(); }, [docPage, selectedFolder]);
 
   const loadSession = async (id: string) => {
     setSessionId(id);
@@ -59,6 +114,8 @@ export default function ChatPage() {
     setTaskSteps([]);
     setShowTaskSteps(false);
     setStreamingContent("");
+    setAttachments([]);
+    setSelectedDocumentIds([]);
     inputRef.current?.focus();
   };
 
@@ -72,7 +129,6 @@ export default function ChatPage() {
       setImagePreview(ev.target?.result as string);
     };
     reader.readAsDataURL(file);
-    // 清空 input 以便可以重复选同一张图
     e.target.value = "";
   };
 
@@ -81,16 +137,133 @@ export default function ChatPage() {
     setImageFile(null);
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+    for (const file of Array.from(files)) {
+      const id = Date.now() + Math.random().toString(36).substr(2, 9);
+      const newAttachment: Attachment = { id, file, uploading: true };
+      
+      if (file.type.startsWith("image/")) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          newAttachment.preview = ev.target?.result as string;
+          setAttachments((prev) => [...prev, newAttachment]);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        setAttachments((prev) => [...prev, newAttachment]);
+      }
+
+      uploadDocument(file).then((res) => {
+        setAttachments((prev) => prev.map(a => 
+          a.id === id ? { ...a, uploading: false, docId: res.id } : a
+        ));
+        setSelectedDocumentIds((prev) => [...prev, res.id]);
+      });
+    }
+    e.target.value = "";
+  };
+
+  const removeAttachment = (id: string) => {
+    const att = attachments.find(a => a.id === id);
+    if (att?.docId) {
+      setSelectedDocumentIds((prev) => prev.filter(i => i !== att.docId!));
+    }
+    setAttachments((prev) => prev.filter(a => a.id !== id));
+  };
+
+  const handleDocumentClick = async (doc: any) => {
+    setSelectedDoc(doc);
+    setDocLoading(true);
+    try {
+      const res = await getDocumentContent(doc.id);
+      setDocContent(res.content);
+    } catch {
+      setDocContent(null);
+    } finally {
+      setDocLoading(false);
+    }
+  };
+
+  const handleDocUpload = async (files: FileList | null) => {
+    if (!files) return;
+    setDocUploading(true);
+    for (const file of Array.from(files)) {
+      await uploadDocument(file, selectedFolder || undefined);
+    }
+    setDocUploading(false);
+    loadDocuments();
+  };
+
+  const handleDocDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    handleDocUpload(e.dataTransfer.files);
+  };
+
+  const handleDeleteDoc = async (docId: string) => {
+    await deleteDocument(docId);
+    if (selectedDoc?.id === docId) {
+      setSelectedDoc(null);
+      setDocContent(null);
+    }
+    loadDocuments();
+  };
+
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return;
+    await createFolder(newFolderName.trim());
+    setNewFolderName("");
+    setShowNewFolder(false);
+    loadDocuments();
+  };
+
+  const handleDeleteFolder = async (folderId: string) => {
+    await deleteFolder(folderId);
+    if (selectedFolder === folderId) setSelectedFolder(null);
+    loadDocuments();
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  };
+
+  const handleChatDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    
+    try {
+      const docData = e.dataTransfer.getData("application/json");
+      if (docData) {
+        const doc = JSON.parse(docData);
+        setSelectedDocumentIds((prev) => [...prev, doc.id]);
+        setInput((prev) => prev + (prev ? "\n" : "") + `[文档: ${doc.original_name}]`);
+      }
+    } catch {}
+  };
+
   const handleSubmit = async () => {
     const text = input.trim();
-    if (!text && !imagePreview) return;
+    if (!text && !imagePreview && attachments.length === 0) return;
     if (isLoading) return;
 
-    const userMsg: Msg = { role: "user", content: text || "[图片]", image: imagePreview || undefined };
+    const userMsg: Msg = { 
+      role: "user", 
+      content: text || "[图片]", 
+      image: imagePreview || undefined,
+      attachments: attachments.length > 0 ? attachments : undefined
+    };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setImagePreview(null);
     setImageFile(null);
+    setAttachments([]);
     setIsLoading(true);
     setStreamingContent("");
     setTaskSteps([]);
@@ -166,7 +339,9 @@ export default function ChatPage() {
           }
           setStreamingContent("");
           setIsLoading(false);
-        }
+          setSelectedDocumentIds([]);
+        },
+        selectedDocumentIds.length > 0 ? selectedDocumentIds : undefined,
       );
 
       if (returnedId && !sessionId) {
@@ -174,7 +349,6 @@ export default function ChatPage() {
       }
     } catch (err: any) {
       setIsLoading(false);
-      // 处理 402 余额不足错误
       if (err?.status === 402 || err?.message?.includes("402")) {
         setCostError(err?.detail?.message || "额度不足，请充值后重试。");
       }
@@ -188,6 +362,16 @@ export default function ChatPage() {
     }
   };
 
+  const totalPages = Math.ceil(docTotal / docPageSize);
+  const fileIcon = (type: string) => 
+    type === "pdf" ? <FileText className="w-3.5 h-3.5 text-red-400" /> : 
+    type === "word" ? <FileText className="w-3.5 h-3.5 text-blue-400" /> : 
+    <File className="w-3.5 h-3.5 text-gray-400" />;
+
+  const filteredDocs = docSearchQuery
+    ? documents.filter((d) => d.original_name.toLowerCase().includes(docSearchQuery.toLowerCase()))
+    : documents;
+
   return (
     <div className="flex flex-1 overflow-hidden">
       <Sidebar
@@ -196,19 +380,224 @@ export default function ChatPage() {
         onNewChat={handleNewChat}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* 消息区域 */}
-        <div className="flex-1 overflow-y-auto">
+      <div className="w-72 bg-gray-50 border-r border-gray-200 flex flex-col shrink-0">
+        <div className="p-3 border-b border-gray-200">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-semibold text-gray-700">我的论文</span>
+            <button 
+              onClick={() => setShowNewFolder(true)} 
+              className="p-1 hover:bg-gray-200 rounded" 
+              title="新建文件夹"
+            >
+              <FolderPlus className="w-4 h-4 text-gray-500" />
+            </button>
+          </div>
+          {showNewFolder && (
+            <div className="flex gap-1 mb-2">
+              <input
+                autoFocus
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreateFolder()}
+                placeholder="文件夹名称"
+                className="flex-1 text-sm border rounded px-2 py-1 outline-none focus:border-indigo-400"
+              />
+              <button 
+                onClick={handleCreateFolder} 
+                className="text-xs px-2 py-1 bg-indigo-500 text-white rounded hover:bg-indigo-600"
+              >
+                添加
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="border-b border-gray-200 px-2 py-2">
+          <div className="flex items-center gap-2">
+            <Search className="w-3.5 h-3.5 text-gray-400" />
+            <input
+              value={docSearchQuery}
+              onChange={(e) => setDocSearchQuery(e.target.value)}
+              placeholder="搜索论文..."
+              className="flex-1 text-xs bg-transparent outline-none placeholder-gray-400"
+            />
+          </div>
+        </div>
+
+        <div className="px-2 py-1">
+          <div
+            onClick={() => { setSelectedFolder(null); setDocPage(1); }}
+            className={`flex items-center gap-2 p-1.5 rounded-lg cursor-pointer text-xs transition-colors ${
+              !selectedFolder ? "bg-indigo-100 text-indigo-700" : "text-gray-600 hover:bg-gray-100"
+            }`}
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+            <span>全部论文</span>
+          </div>
+          {folders.map((f) => (
+            <div
+              key={f.id}
+              onClick={() => { setSelectedFolder(f.id); setDocPage(1); }}
+              className={`group flex items-center gap-2 p-1.5 rounded-lg cursor-pointer text-xs transition-colors ${
+                selectedFolder === f.id ? "bg-indigo-100 text-indigo-700" : "text-gray-600 hover:bg-gray-100"
+              }`}
+            >
+              <Folder className="w-3.5 h-3.5" />
+              <span className="flex-1 truncate">{f.name}</span>
+              <span className="text-[10px] text-gray-400">{f.document_count}</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); handleDeleteFolder(f.id); }}
+                className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100"
+              >
+                <Trash2 className="w-3 h-3 text-red-400" />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <div
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={handleDocDrop}
+          onClick={() => docFileInputRef.current?.click()}
+          className="mx-2 mb-2 border-2 border-dashed border-gray-300 rounded-lg p-3 text-center hover:border-indigo-400 hover:bg-indigo-50 transition-colors cursor-pointer"
+        >
+          <input 
+            ref={docFileInputRef} 
+            type="file" 
+            multiple 
+            accept=".pdf,.doc,.docx,.md,.txt" 
+            className="hidden" 
+            onChange={(e) => handleDocUpload(e.target.files)} 
+          />
+          <Upload className={`w-5 h-5 mx-auto mb-1 ${docUploading ? "text-indigo-500 animate-bounce" : "text-gray-400"}`} />
+          <p className="text-[11px] text-gray-600 font-medium">
+            {docUploading ? "上传中..." : "拖拽或点击上传论文"}
+          </p>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-2 pb-2">
+          {filteredDocs.length === 0 ? (
+            <div className="text-center text-gray-400 text-xs mt-4">暂无论文</div>
+          ) : (
+            <div className="space-y-1">
+              {filteredDocs.map((doc) => (
+                <div
+                  key={doc.id}
+                  onClick={() => handleDocumentClick(doc)}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("application/json", JSON.stringify(doc));
+                    e.dataTransfer.setData("text/plain", doc.original_name);
+                    e.dataTransfer.effectAllowed = "copy";
+                  }}
+                  className={`flex items-center gap-2 p-2 rounded-lg hover:shadow-sm hover:border-indigo-300 transition-all cursor-pointer group ${
+                    selectedDoc?.id === doc.id 
+                      ? "bg-indigo-50 border border-indigo-300" 
+                      : "bg-white border border-gray-200"
+                  }`}
+                >
+                  {fileIcon(doc.file_type)}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium text-gray-800 truncate">{doc.original_name}</div>
+                    <div className="text-[10px] text-gray-400">
+                      {formatFileSize(doc.file_size)}
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDeleteDoc(doc.id); }}
+                    className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-50 transition-opacity"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {totalPages > 1 && (
+          <div className="flex items-center justify-center gap-1 p-2 border-t border-gray-200">
+            <button
+              onClick={() => setDocPage(Math.max(1, docPage - 1))}
+              disabled={docPage === 1}
+              className="p-1 rounded hover:bg-gray-200 disabled:opacity-30"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => i + 1).map((p) => (
+              <button
+                key={p}
+                onClick={() => setDocPage(p)}
+                className={`w-6 h-6 rounded text-[10px] font-medium transition-colors ${
+                  docPage === p ? "bg-indigo-500 text-white" : "text-gray-600 hover:bg-gray-100"
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+            <button
+              onClick={() => setDocPage(Math.min(totalPages, docPage + 1))}
+              disabled={docPage === totalPages}
+              className="p-1 rounded hover:bg-gray-200 disabled:opacity-30"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {selectedDoc && (
+        <div className="w-80 bg-white border-r border-gray-200 flex flex-col shrink-0">
+          <div className="p-3 border-b border-gray-200 flex items-center justify-between">
+            <div className="flex items-center gap-2 min-w-0">
+              {fileIcon(selectedDoc.file_type)}
+              <span className="text-sm font-semibold text-gray-800 truncate">{selectedDoc.original_name}</span>
+            </div>
+            <button
+              onClick={() => { setSelectedDoc(null); setDocContent(null); }}
+              className="p-1 hover:bg-gray-100 rounded"
+            >
+              <X className="w-4 h-4 text-gray-500" />
+            </button>
+          </div>
+          <div className="px-3 py-2 border-b border-gray-100 text-xs text-gray-500">
+            {formatFileSize(selectedDoc.file_size)} · {formatDate(selectedDoc.created_at)}
+          </div>
+          <div className="flex-1 overflow-y-auto p-3">
+            {docLoading ? (
+              <div className="flex items-center justify-center h-full">
+                <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : docContent ? (
+              <pre className="text-xs text-gray-700 whitespace-pre-wrap font-sans leading-relaxed">
+                {docContent}
+              </pre>
+            ) : (
+              <div className="text-center text-gray-400 text-xs mt-8">
+                无法解析或不支持的文件格式
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div 
+        className="flex-1 flex flex-col min-w-0"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleChatDrop}
+      >
+        <div className={`flex-1 overflow-y-auto transition-colors ${isDragOver ? "bg-indigo-50" : ""}`}>
           {messages.length === 0 && !isLoading ? (
             <div className="flex flex-col items-center justify-center h-full text-center px-4">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center mb-4">
                 <Sparkles className="w-8 h-8 text-white" />
               </div>
               <h2 className="text-xl font-semibold text-gray-800 mb-2">Scholar Agent</h2>
-              <p className="text-gray-500 text-sm max-w-md">
-                AI驱动的智能学术研究助手。你可以提问、搜索论文，或切换到智能体模式获取完整的文献综述。
+              <p className="text-gray-500 text-sm max-w-md mb-4">
+                AI驱动的智能学术研究助手。你可以提问、搜索论文，或从左侧拖拽论文到此处进行分析。
               </p>
-              <div className="grid grid-cols-2 gap-3 mt-6 max-w-lg">
+              <div className="grid grid-cols-2 gap-3 max-w-lg">
                 {[
                   "大语言模型推理能力的最新进展有哪些？",
                   "解释一下 Transformer 架构",
@@ -240,7 +629,7 @@ export default function ChatPage() {
                         <TaskProgress steps={taskSteps} />
                       </div>
                     )}
-                    <ChatMessage key={i} role={msg.role} content={msg.content} image={msg.image} />
+                    <ChatMessage key={i} role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} />
                     {!isStreamingActive && !isLastAssistantMessage && isLastMessage && showTaskSteps && taskSteps.length > 0 && (
                       <div className="flex gap-3" key="task-steps-end">
                         <div className="w-8" />
@@ -289,10 +678,8 @@ export default function ChatPage() {
           )}
         </div>
 
-        {/* 输入区域 */}
         <div className="border-t border-gray-200 bg-white p-4">
           <div className="max-w-3xl mx-auto">
-            {/* 余额不足提示 */}
             {costError && (
               <div className="mb-3 flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
                 <AlertCircle className="w-4 h-4 shrink-0" />
@@ -301,7 +688,7 @@ export default function ChatPage() {
                 <button onClick={() => setCostError(null)} className="text-red-400 hover:text-red-600 ml-1">×</button>
               </div>
             )}
-            {/* 模式与功能开关 */}
+            
             <div className="flex items-center gap-2 mb-3">
               <button
                 onClick={() => setMode(mode === "normal" ? "agent" : "normal")}
@@ -327,7 +714,6 @@ export default function ChatPage() {
               </button>
             </div>
 
-            {/* 图片预览 */}
             {imagePreview && (
               <div className="mb-2 relative inline-block">
                 <img src={imagePreview} alt="预览" className="h-20 rounded-lg border border-gray-200 object-cover" />
@@ -340,7 +726,38 @@ export default function ChatPage() {
               </div>
             )}
 
-            {/* 文本输入 */}
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachments.map((attachment) => (
+                  <div
+                    key={attachment.id}
+                    className="relative flex items-center gap-2 px-3 py-2 bg-gray-100 rounded-lg border border-gray-200"
+                  >
+                    {attachment.preview ? (
+                      <img src={attachment.preview} alt="" className="w-8 h-8 rounded object-cover" />
+                    ) : (
+                      <FileText className="w-5 h-5 text-gray-500" />
+                    )}
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium text-gray-700 max-w-24 truncate">{attachment.file.name}</span>
+                      <span className="text-[10px] text-gray-400">{formatFileSize(attachment.file.size)}</span>
+                    </div>
+                    {attachment.uploading && (
+                      <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                    )}
+                    {!attachment.uploading && (
+                      <button
+                        onClick={() => removeAttachment(attachment.id)}
+                        className="p-0.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="flex items-end gap-2 bg-gray-50 border border-gray-200 rounded-2xl p-2 focus-within:border-indigo-300 focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
               <input
                 ref={imageInputRef}
@@ -349,6 +766,14 @@ export default function ChatPage() {
                 className="hidden"
                 onChange={handleImageSelect}
               />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".pdf,.doc,.docx,.md,.txt,.png,.jpg,.jpeg,.gif"
+                className="hidden"
+                onChange={handleFileSelect}
+              />
               <button
                 onClick={() => imageInputRef.current?.click()}
                 className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-200 shrink-0"
@@ -356,19 +781,26 @@ export default function ChatPage() {
               >
                 <ImagePlus className="w-5 h-5" />
               </button>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-200 shrink-0"
+                title="上传文件"
+              >
+                <Paperclip className="w-5 h-5" />
+              </button>
               <textarea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 rows={1}
-                placeholder={mode === "agent" ? "描述你的研究任务..." : "输入你的问题..."}
+                placeholder={mode === "agent" ? "描述你的研究任务或拖拽论文..." : "输入你的问题或拖拽论文..."}
                 className="flex-1 resize-none bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400 max-h-32 py-2"
                 style={{ minHeight: "36px" }}
               />
               <button
                 onClick={handleSubmit}
-                disabled={(!input.trim() && !imagePreview) || isLoading}
+                disabled={(!input.trim() && !imagePreview && attachments.length === 0) || isLoading}
                 className="p-2 bg-indigo-500 text-white rounded-xl hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
               >
                 <Send className="w-4 h-4" />

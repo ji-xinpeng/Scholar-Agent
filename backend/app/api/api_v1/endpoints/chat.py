@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from app.models.schemas import ChatRequest, SessionCreate
 from app.services.agent_service import AgentService
+from app.services.document_service import document_service
 from app.core.logger import logger
 import json
 from datetime import datetime, timezone
@@ -15,6 +16,22 @@ async def chat(request: ChatRequest):
     """主聊天接口 - 返回SSE流"""
     logger.info(f"收到聊天请求 - 用户: {request.user_id}, 模式: {request.mode}, 会话: {request.session_id or '新会话'}")
     logger.debug(f"消息: {request.message[:100]}...")
+
+    # 处理文档内容
+    document_context = ""
+    if request.document_ids:
+        for doc_id in request.document_ids:
+            doc = document_service.get_document(doc_id)
+            if doc:
+                content = document_service.get_document_content(doc_id)
+                if content:
+                    document_context += f"\n\n=== 文档: {doc['original_name']} ===\n{content}"
+                    logger.info(f"已加载文档: {doc['original_name']}, 长度: {len(content)}")
+
+    # 如果有文档内容，将其添加到消息中
+    enhanced_message = request.message
+    if document_context:
+        enhanced_message = f"{request.message}\n\n【相关文档内容】{document_context}"
 
     # 如果未提供会话ID则自动创建
     if not request.session_id:
@@ -35,18 +52,19 @@ async def chat(request: ChatRequest):
     history = agent_service.session_service.get_messages(session_id)
     logger.debug(f"加载 {len(history)} 条历史消息")
     
-    # 保存用户消息
-    agent_service.session_service.add_message(session_id, "user", request.message)
+    # 保存用户消息（保存原始消息，不带文档上下文）
+    metadata = {"document_ids": request.document_ids} if request.document_ids else None
+    agent_service.session_service.add_message(session_id, "user", request.message, metadata=metadata)
 
     async def wrapped_generator():
         try:
             if request.mode == "agent":
                 logger.info("启动Agent模式聊天")
-                async for chunk in agent_service.run_agent_chat(request.message, session_id, history, web_search=request.web_search):
+                async for chunk in agent_service.run_agent_chat(enhanced_message, session_id, history, web_search=request.web_search):
                     yield chunk
             else:
                 logger.info("启动普通模式聊天")
-                async for chunk in agent_service.run_normal_chat(request.message, session_id, history, web_search=request.web_search):
+                async for chunk in agent_service.run_normal_chat(enhanced_message, session_id, history, web_search=request.web_search):
                     yield chunk
             logger.info("聊天生成成功完成")
         except Exception as e:

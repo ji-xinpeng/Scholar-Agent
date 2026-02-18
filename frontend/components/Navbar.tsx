@@ -2,11 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, FileText, User, GraduationCap } from "lucide-react";
+import { BookOpen, User, GraduationCap } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/", label: "智能助手", icon: BookOpen },
-  { href: "/documents", label: "文档管理", icon: FileText },
   { href: "/profile", label: "个人中心", icon: User },
 ];
 

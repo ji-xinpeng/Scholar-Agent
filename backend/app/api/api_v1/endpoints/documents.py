@@ -41,6 +41,14 @@ async def get_document(doc_id: str):
     return doc
 
 
+@router.get("/{doc_id}/content")
+async def get_document_content(doc_id: str):
+    content = document_service.get_document_content(doc_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Document not found or unsupported format")
+    return {"content": content}
+
+
 @router.delete("/{doc_id}")
 async def delete_document(doc_id: str):
     ok = document_service.delete_document(doc_id)

@@ -46,6 +46,7 @@ class ChatRequest(BaseModel):
     user_id: str = "default"
     mode: str = "normal"  # "normal" 或 "agent"
     web_search: bool = False
+    document_ids: Optional[List[str]] = None
 
 
 # ========== 文档 ==========
@@ -114,11 +115,6 @@ class UserProfileUpdate(BaseModel):
     institution: Optional[str] = None
     bio: Optional[str] = None
     model_mode: Optional[str] = None
-
-
-class RechargeRequest(BaseModel):
-    user_id: str = "default"
-    amount: float
 
 
 # ========== SSE事件 ==========
