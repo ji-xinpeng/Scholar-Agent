@@ -2,6 +2,7 @@ import json
 import asyncio
 import uuid
 import random
+import re
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Dict, Any
 from app.infrastructure.logging.config import logger
@@ -14,6 +15,63 @@ from app.application.services.session_service import session_service
 
 class AgentOrchestrator:
     """Agent 编排引擎 - 负责协调和执行聊天流程"""
+
+    def _extract_json(self, text: str) -> Any:
+        """
+        从文本中提取并解析 JSON，支持以下情况：
+        - 纯 JSON
+        - 被 ```json ... ``` 包裹的 JSON
+        - 被 ``` ... ``` 包裹的 JSON
+        - JSON 前后有其他文字
+        
+        Args:
+            text: 包含 JSON 的文本
+        
+        Returns:
+            解析后的 JSON 对象，解析失败返回 None
+        """
+        text = text.strip()
+        if not text:
+            return None
+
+        # 尝试直接解析
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # 使用正则提取 JSON 数组或对象
+        # 匹配以 [ 或 { 开头，以 ] 或 } 结尾的内容
+        json_pattern = r'(\[[\s\S]*\]|\{[\s\S]*\})'
+        matches = re.findall(json_pattern, text)
+        
+        for match in matches:
+            try:
+                result = json.loads(match)
+                return result
+            except json.JSONDecodeError:
+                continue
+
+        # 如果正则没找到，尝试提取 code block
+        if "```" in text:
+            blocks = text.split("```")
+            # 倒序查找，因为 JSON 通常在后面
+            for block in reversed(blocks):
+                block = block.strip()
+                if not block:
+                    continue
+                # 跳过语言标记（如 json、javascript 等）
+                if "\n" in block:
+                    first_line, rest = block.split("\n", 1)
+                    if first_line.lower() in ("json", "javascript", "js", "typescript", "ts"):
+                        block = rest.strip()
+                try:
+                    return json.loads(block)
+                except json.JSONDecodeError:
+                    continue
+
+        logger.warning(f"无法从文本中解析 JSON: {text[:200]}...")
+        return None
 
     def _sse(self, event_type: str, data: dict) -> str:
         data["timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -143,24 +201,33 @@ class AgentOrchestrator:
         if selected_doc_ids:
             context_parts.append(f"用户当前选中的文档ID列表: {json.dumps(selected_doc_ids, ensure_ascii=False)}（使用 DocEditTool 或 MultiModalRAGTool 时请使用这些 doc_id）")
 
-        plan_prompt = f"""你是一位任务规划专家。你的任务是根据用户问题与上下文，从以下已支持的工具中选择零个、一个或多个工具，自主决定需要哪些步骤，调用合适的工具，并最终生成专业的回答，并给出每个工具的参数。只输出一个 JSON 数组，不要其他文字。
+        plan_prompt = f"""你是一位专业的任务规划专家。请根据用户问题，从可用工具中选择合适的工具组合来完成任务。
 
-        上下文:
+        ## 上下文信息
         {chr(10).join(context_parts)}
 
-        可用工具:
+        ## 可用工具
         {chr(10).join(tools_desc)}
 
-        输出格式（仅输出此 JSON 数组）:
-        [{{"tool": "工具名", "params": {{...}}}}, ...]
+        ## 任务要求
+        1. 分析用户问题，选择零个或多个合适的工具
+        2. 确定工具执行顺序，构建任务流程
+        3. 为每个工具提供必要的参数
+        4. 只输出 JSON 数组，不要任何其他文字
 
-        规则:
-        1. 若不需要任何工具（如闲聊、简单问答），输出 []
-        2. 工具名必须与上面列表中的 name 完全一致
-        3. params 只包含该工具需要的字段，DocEditTool 的 doc_id 必须从「用户当前选中的文档ID列表」中取
-        4. 可组合多个工具，按执行顺序排列
-        5. 搜索与筛选/引用串联：FilterTool、CitationTool 需要论文列表 papers。若将 FilterTool 或 CitationTool 排在 SearchTool（或上一级 FilterTool）之后，其 params 中可不传 papers 或传空数组，系统会自动用上一步的论文结果填充。
-        6. DocEditTool 的 user_id 不需要在 params 中指定，系统会自动填充。
+        ## 输出格式
+        ```json
+        [
+        {{"tool": "工具名称", "params": {{"参数名": "参数值"}}}},
+        ...
+        ]
+        ```
+
+        ## 重要规则
+        1. 若不需要工具（如简单问答、闲聊），输出 `[]`
+        2. 工具名必须与「可用工具」列表中的 name 完全一致
+        3. DocEditTool 的 doc_id 优先从「用户当前选中的文档ID列表」中选择
+        4. 工具可以串联使用，部分工具可自动使用前序工具的结果
         """
 
         plan_messages = messages + [ChatMessage(role=MessageRole.USER, content=plan_prompt)]
@@ -169,22 +236,11 @@ class AgentOrchestrator:
         try:
             response = await llm_service.chat(plan_messages)
             text = (response.content or "").strip()
-            # 解析 JSON（可能被 markdown 包裹）
-            if "```" in text:
-                for block in text.split("```"):
-                    block = block.strip()
-                    if block.startswith("json"):
-                        block = block[4:].strip()
-                    if block.startswith("["):
-                        try:
-                            raw_tasks = json.loads(block)
-                            break
-                        except json.JSONDecodeError:
-                            continue
+            
+            parsed = self._extract_json(text)
+            if isinstance(parsed, list):
+                raw_tasks = parsed
             else:
-                raw_tasks = json.loads(text)
-
-            if not isinstance(raw_tasks, list):
                 raw_tasks = []
 
             tool_names = {t["name"] for t in available_tools}
@@ -204,10 +260,8 @@ class AgentOrchestrator:
                     if user_id:
                         params["user_id"] = user_id
                 tasks.append({"tool": tool_name, "params": params})
-        except json.JSONDecodeError as e:
-            logger.warning(f"任务规划 JSON 解析失败: {e}")
         except Exception as e:
-            logger.warning(f"任务规划失败: {e}")
+            logger.warning(f"任务规划失败: {e}", exc_info=True)
 
         return {"tasks": tasks}
 
@@ -216,35 +270,10 @@ class AgentOrchestrator:
         """根据工具描述与参数生成通用任务展示文案"""
         tool_name = task.get("tool", "")
         params = task.get("params", {}) or {}
-        
-        # DocEditTool 特殊处理
-        if tool_name == "DocEditTool":
-            action = params.get("action", "")
-            if action == "create":
-                filename = params.get("filename", "新文档")
-                return f"创建文档: {filename}"
-            elif action == "delete":
-                return "删除文档"
-            elif action == "read":
-                return "读取文档"
-            elif action == "update":
-                return "更新文档内容"
-            elif action == "append":
-                return "追加文档内容"
-            elif action == "replace":
-                return "替换文档内容"
-        
         meta = toolhub.get_tool(tool_name)
-        desc = (meta.description if meta else tool_name) or "执行任务"
-        # 取一个代表性参数做简短预览（常见键：query、content、action 等）
-        for key in ("query", "content", "filename", "doc_id"):
-            val = params.get(key)
-            if val is not None and str(val).strip():
-                preview = str(val).strip()[:25]
-                if len(str(val).strip()) > 25:
-                    preview += "…"
-                return f"{desc}: {preview}"
-        return desc
+        if meta:
+            return meta.get_action_label(params)
+        return tool_name or "执行任务"
 
 
     def _resolve_task_params(self, tool_name: str, params: dict, previous_results: dict) -> dict:

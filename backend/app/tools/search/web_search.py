@@ -6,6 +6,7 @@ import asyncio
 from typing import Optional, List
 from pydantic import BaseModel, Field
 from app.infrastructure.logging.config import logger
+from app.infrastructure.storage.redis import cache_manager
 
 
 class ScholarResultItem(BaseModel):
@@ -85,7 +86,7 @@ class SearchManager:
 
 class SearchTool(BaseTool):
     name = "SearchTool"
-    description = "检索学术论文数据库"
+    description = "检索学术论文数据库，返回论文列表。结果可被后续的 FilterTool 或 CitationTool 直接使用。"
     parameters = {
         "query": {"type": "string", "description": "研究主题关键词", "required": True},
         "max_results": {"type": "integer", "description": "最大返回论文数", "default": 10},
@@ -98,15 +99,27 @@ class SearchTool(BaseTool):
         max_results = kwargs.get("max_results", 10)
         year_range = kwargs.get("year_range", "")
 
+        # 尝试从缓存获取
+        cache_key = f"search:{query}:{max_results}:{year_range}"
+        cached_result = cache_manager.get(cache_key)
+        if cached_result is not None:
+            logger.info(f"SearchTool 缓存命中: {query}")
+            return cached_result
+
         search_manager = SearchManager()
         search_results = await search_manager.search([query], max_results)
         if not search_results.organic:
-            return {
+            result = {
                 "success": False,
                 "message": "搜索功能暂不可用，请直接使用文档检索"
             }
-        papers = [paper.model_dump() for paper in search_results.organic[0].data]
-        return {
-            "success": True,
-            "papers": papers
-        }
+        else:
+            papers = [paper.model_dump() for paper in search_results.organic[0].data]
+            result = {
+                "success": True,
+                "papers": papers
+            }
+
+        # 缓存结果（缓存 24 小时）
+        cache_manager.set(cache_key, result, ttl=86400)
+        return result

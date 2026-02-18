@@ -25,3 +25,23 @@ class BaseTool(ABC):
             解析后的完整参数字典
         """
         return params
+    
+    def get_action_label(self, params: Dict[str, Any]) -> str:
+        """
+        根据参数生成任务展示文案
+        
+        Args:
+            params: 工具参数字典
+        
+        Returns:
+            展示文案
+        """
+        # 默认实现：取一个代表性参数做预览
+        for key in ("query", "content", "filename", "doc_id", "action"):
+            val = params.get(key)
+            if val is not None and str(val).strip():
+                preview = str(val).strip()[:25]
+                if len(str(val).strip()) > 25:
+                    preview += "…"
+                return f"{self.description}: {preview}"
+        return self.description

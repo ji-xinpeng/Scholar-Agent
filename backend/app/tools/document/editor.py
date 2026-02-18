@@ -7,7 +7,7 @@ from app.infrastructure.logging.config import logger
 class DocEditTool(BaseTool):
     """对文档进行增删改查操作"""
     name = "DocEditTool"
-    description = "对文档进行读取、修改、追加、替换、新建或删除操作。仅支持 .docx/.doc、.md、.txt 格式。"
+    description = "对文档进行读取、修改、追加、替换、新建或删除操作。仅支持 .docx/.doc、.md、.txt 格式。read/update/append/replace/delete 需要 doc_id（从用户选中列表取）；create 需要 filename，可同时设置 content 作为初始内容。"
     parameters = {
         "action": {
             "type": "string",
@@ -20,8 +20,25 @@ class DocEditTool(BaseTool):
         "new_text": {"type": "string", "description": "替换后的内容（replace 时必填，空字符串表示删除）", "default": ""},
         "filename": {"type": "string", "description": "文件名（create 时必填）", "default": ""},
         "file_type": {"type": "string", "description": "文件类型（create 时可选）: markdown/text/word", "default": "markdown"},
-        "user_id": {"type": "string", "description": "用户ID（create 时必填）", "required": False}
+        "user_id": {"type": "string", "description": "用户ID（系统自动填充，无需指定）", "required": False}
     }
+
+    def get_action_label(self, params: Dict[str, Any]) -> str:
+        action = params.get("action", "")
+        if action == "create":
+            filename = params.get("filename", "新文档")
+            return f"创建文档: {filename}"
+        elif action == "delete":
+            return "删除文档"
+        elif action == "read":
+            return "读取文档"
+        elif action == "update":
+            return "更新文档内容"
+        elif action == "append":
+            return "追加文档内容"
+        elif action == "replace":
+            return "替换文档内容"
+        return super().get_action_label(params)
 
     async def run(self, **kwargs) -> Dict[str, Any]:
         action = kwargs.get("action", "").lower()
