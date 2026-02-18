@@ -35,7 +35,7 @@ class AgentService:
     ) -> AsyncGenerator[str, None]:
         """Agent模式 - 智能规划、调用工具、生成回答（向后兼容）"""
         logger.info(f"向后兼容的 Agent 聊天模式调用")
-        async for chunk in agent_orchestrator.run_scholar_chat(
+        async for chunk in agent_orchestrator.run_agent_chat(
             session_id, "default", query, document_ids
         ):
             yield chunk

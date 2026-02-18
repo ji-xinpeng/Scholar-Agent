@@ -1,14 +1,29 @@
 from typing import Dict, Any, List
 from app.tools.base import BaseTool
+from app.infrastructure.logging.config import logger
 
 
 class CitationTool(BaseTool):
     name = "CitationTool"
     description = "自动生成引用格式"
     parameters = {
-        "papers": {"type": "array", "description": "论文信息列表", "required": True},
+        "papers": {"type": "array", "description": "论文信息列表（若本步骤紧接在 SearchTool 或 FilterTool 之后，可不传，系统自动使用上一步结果）", "required": True},
         "format": {"type": "string", "description": "引用格式：gb7714/apa/mla", "default": "gb7714"}
     }
+
+    def resolve_params(self, params: Dict[str, Any], previous_results: Dict[str, Any]) -> Dict[str, Any]:
+        params = dict(params) if params else {}
+        if not params.get("papers") or params.get("papers") == []:
+            for prev_tool in ("FilterTool", "SearchTool"):
+                if prev_tool in previous_results:
+                    prev_result = previous_results[prev_tool]
+                    if isinstance(prev_result, dict) and prev_result.get("success"):
+                        papers = prev_result.get("papers")
+                        if isinstance(papers, list) and papers:
+                            params["papers"] = papers
+                            logger.info(f"{self.name} 自动使用 {prev_tool} 的结果（{len(papers)} 篇论文）")
+                            break
+        return params
 
     def _generate_gb7714_citation(self, paper: dict) -> str:
         """生成 GB/T 7714 格式引用"""

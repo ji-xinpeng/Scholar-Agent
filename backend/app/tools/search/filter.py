@@ -1,16 +1,31 @@
 from typing import Dict, Any, List
 from app.tools.base import BaseTool
+from app.infrastructure.logging.config import logger
 
 
 class FilterTool(BaseTool):
     name = "FilterTool"
     description = "筛选与排序检索结果"
     parameters = {
-        "papers": {"type": "array", "description": "论文列表", "required": True},
+        "papers": {"type": "array", "description": "论文列表（若本步骤紧接在 SearchTool 或 FilterTool 之后，可不传，系统自动使用上一步结果）", "required": True},
         "sort_by": {"type": "string", "description": "排序字段：citations/year/relevance", "default": "relevance"},
         "min_citations": {"type": "integer", "description": "最小引用数", "default": 0},
         "year_from": {"type": "integer", "description": "起始年份", "default": 2000}
     }
+
+    def resolve_params(self, params: Dict[str, Any], previous_results: Dict[str, Any]) -> Dict[str, Any]:
+        params = dict(params) if params else {}
+        if not params.get("papers") or params.get("papers") == []:
+            for prev_tool in ("FilterTool", "SearchTool"):
+                if prev_tool in previous_results:
+                    prev_result = previous_results[prev_tool]
+                    if isinstance(prev_result, dict) and prev_result.get("success"):
+                        papers = prev_result.get("papers")
+                        if isinstance(papers, list) and papers:
+                            params["papers"] = papers
+                            logger.info(f"{self.name} 自动使用 {prev_tool} 的结果（{len(papers)} 篇论文）")
+                            break
+        return params
 
     async def run(self, **kwargs) -> Dict[str, Any]:
         """筛选和排序论文"""

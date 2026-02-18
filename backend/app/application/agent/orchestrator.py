@@ -56,7 +56,7 @@ class AgentOrchestrator:
             yield self._sse("error", {"message": str(e)})
             yield self._sse("done", {})
 
-    async def run_scholar_chat(
+    async def run_agent_chat(
         self,
         session_id: str,
         user_id: str,
@@ -76,7 +76,7 @@ class AgentOrchestrator:
             base_messages = self._build_chat_messages(history, system_prompt)
 
             yield self._sse("thinking", {"message": "正在分析问题..."})
-            plan = await self._plan_tasks(user_query, base_messages, selected_doc_ids)
+            plan = await self._plan_tasks(user_query, base_messages, selected_doc_ids, user_id)
             tasks = plan.get("tasks", [])
 
             # 前端需要 plan 为 [{id, action}] 数组及 thought，至少保留一个步骤避免卡片消失
@@ -92,6 +92,8 @@ class AgentOrchestrator:
             for i, task in enumerate(tasks):
                 tool_name = task.get("tool")
                 params = task.get("params", {})
+                # 自动从之前任务的结果中填充缺失参数
+                params = self._resolve_task_params(tool_name, params, results)
                 step_id = str(i)
                 action_label = self._task_action_label(task)
 
@@ -126,107 +128,152 @@ class AgentOrchestrator:
             yield self._sse("error", {"message": str(e)})
             yield self._sse("done", {})
 
-    async def _plan_tasks(self, query: str, messages: list, selected_doc_ids: list = None) -> dict:
-        """任务规划：支持 SearchTool 与 DocEditTool"""
+
+    async def _plan_tasks(self, query: str, messages: list, selected_doc_ids: list = None, user_id: str = None) -> dict:
+        """任务规划：从已支持的工具中由 LLM 选择合适的工具及参数"""
         selected_doc_ids = selected_doc_ids or []
+        available_tools = toolhub.list_tools()
+
+        tools_desc = []
+        for t in available_tools:
+            params_str = json.dumps(t["parameters"], ensure_ascii=False)
+            tools_desc.append(f"- {t['name']}: {t['description']}\n  参数定义: {params_str}")
+
+        context_parts = [f"用户问题: {query}"]
+        if selected_doc_ids:
+            context_parts.append(f"用户当前选中的文档ID列表: {json.dumps(selected_doc_ids, ensure_ascii=False)}（使用 DocEditTool 或 MultiModalRAGTool 时请使用这些 doc_id）")
+
+        plan_prompt = f"""你是一位任务规划专家。你的任务是根据用户问题与上下文，从以下已支持的工具中选择零个、一个或多个工具，自主决定需要哪些步骤，调用合适的工具，并最终生成专业的回答，并给出每个工具的参数。只输出一个 JSON 数组，不要其他文字。
+
+        上下文:
+        {chr(10).join(context_parts)}
+
+        可用工具:
+        {chr(10).join(tools_desc)}
+
+        输出格式（仅输出此 JSON 数组）:
+        [{{"tool": "工具名", "params": {{...}}}}, ...]
+
+        规则:
+        1. 若不需要任何工具（如闲聊、简单问答），输出 []
+        2. 工具名必须与上面列表中的 name 完全一致
+        3. params 只包含该工具需要的字段，DocEditTool 的 doc_id 必须从「用户当前选中的文档ID列表」中取
+        4. 可组合多个工具，按执行顺序排列
+        5. 搜索与筛选/引用串联：FilterTool、CitationTool 需要论文列表 papers。若将 FilterTool 或 CitationTool 排在 SearchTool（或上一级 FilterTool）之后，其 params 中可不传 papers 或传空数组，系统会自动用上一步的论文结果填充。
+        6. DocEditTool 的 user_id 不需要在 params 中指定，系统会自动填充。
+        """
+
+        plan_messages = messages + [ChatMessage(role=MessageRole.USER, content=plan_prompt)]
         tasks = []
-
-        # 1. 文档编辑意图：用户选中了文档且表达修改/编辑意图
-        edit_keywords = ["修改", "编辑", "更新", "追加", "替换", "改成", "添加", "删除", "改写", "写入"]
-        has_edit_intent = any(kw in query for kw in edit_keywords)
-
-        if has_edit_intent and selected_doc_ids:
-            doc_id = selected_doc_ids[0]
-            edit_plan = await self._plan_doc_edit(query, doc_id)
-            if edit_plan:
-                tasks.append(edit_plan)
-
-        # 2. 搜索意图：若尚未规划文档编辑，再判断是否需要搜索
-        if not tasks:
-            plan_prompt = f"用户问题: {query}\n请判断是否需要使用搜索工具查找论文或文献。只需回答：需要 或 不需要。"
-            plan_messages = messages + [ChatMessage(role=MessageRole.USER, content=plan_prompt)]
-            try:
-                response = await llm_service.chat(plan_messages)
-                if any(kw in response.content for kw in ["搜索", "查找", "论文", "文献", "需要"]):
-                    if "不需要" not in response.content and "无需" not in response.content:
-                        tasks.append({
-                            "tool": "SearchTool",
-                            "params": {"query": query, "max_results": 5}
-                        })
-            except Exception as e:
-                logger.warning(f"搜索规划失败: {e}")
-
-        return {"tasks": tasks}
-
-    async def _plan_doc_edit(self, query: str, doc_id: str) -> dict:
-        """规划文档编辑任务：由 LLM 推断 action 及参数"""
-        prompt = f"""用户请求: {query}
-需编辑的文档ID: {doc_id}
-
-请以 JSON 输出 DocEditTool 的参数，仅输出 JSON，不要其他文字。
-- action 必填，取其一: read（仅读取）, update（全文替换）, append（末尾追加）, replace（替换片段）
-- doc_id 固定为: {doc_id}
-- update/append 时提供 content
-- replace 时提供 old_text 和 new_text
-
-示例1 追加: {{"action":"append","doc_id":"{doc_id}","content":"要追加的内容"}}
-示例2 替换: {{"action":"replace","doc_id":"{doc_id}","old_text":"原文","new_text":"新文"}}
-示例3 读取: {{"action":"read","doc_id":"{doc_id}"}}
-"""
+        raw_tasks = []
         try:
-            response = await llm_service.chat([ChatMessage(role=MessageRole.USER, content=prompt)])
-            text = response.content.strip()
-            obj = None
-            # 尝试解析 JSON（可能被 markdown 包裹）
+            response = await llm_service.chat(plan_messages)
+            text = (response.content or "").strip()
+            # 解析 JSON（可能被 markdown 包裹）
             if "```" in text:
                 for block in text.split("```"):
                     block = block.strip()
                     if block.startswith("json"):
                         block = block[4:].strip()
-                    if block.startswith("{"):
+                    if block.startswith("["):
                         try:
-                            obj = json.loads(block)
+                            raw_tasks = json.loads(block)
                             break
                         except json.JSONDecodeError:
                             continue
-            if obj is None:
-                obj = json.loads(text)
+            else:
+                raw_tasks = json.loads(text)
 
-            action = (obj.get("action") or "read").lower()
-            params = {"action": action, "doc_id": doc_id}
-            if action in ("update", "append") and "content" in obj:
-                params["content"] = str(obj["content"])
-            if action == "replace":
-                params["old_text"] = str(obj.get("old_text", ""))
-                params["new_text"] = str(obj.get("new_text", ""))
-            return {"tool": "DocEditTool", "params": params}
+            if not isinstance(raw_tasks, list):
+                raw_tasks = []
+
+            tool_names = {t["name"] for t in available_tools}
+            for item in raw_tasks:
+                if not isinstance(item, dict):
+                    continue
+                tool_name = item.get("tool") or item.get("tool_name")
+                params = item.get("params") or item.get("parameters") or {}
+                if not tool_name or tool_name not in tool_names:
+                    continue
+                # 约束：DocEditTool 若用户选中了文档，则 doc_id 使用选中的第一个
+                if tool_name == "DocEditTool":
+                    params = dict(params)
+                    if selected_doc_ids and "doc_id" not in params:
+                        params["doc_id"] = selected_doc_ids[0]
+                    # 自动填充 user_id
+                    if user_id:
+                        params["user_id"] = user_id
+                tasks.append({"tool": tool_name, "params": params})
+        except json.JSONDecodeError as e:
+            logger.warning(f"任务规划 JSON 解析失败: {e}")
         except Exception as e:
-            logger.warning(f"文档编辑规划失败: {e}")
-            return None
+            logger.warning(f"任务规划失败: {e}")
+
+        return {"tasks": tasks}
+
 
     def _task_action_label(self, task: dict) -> str:
-        """生成任务展示文案"""
-        tool = task.get("tool", "")
-        params = task.get("params", {})
-        if tool == "SearchTool":
-            return f"执行搜索: {params.get('query', '')[:30]}..."
-        if tool == "DocEditTool":
-            act = params.get("action", "")
-            act_map = {"read": "读取文档", "update": "全文更新", "append": "追加内容", "replace": "替换片段"}
-            return act_map.get(act, act) or "编辑文档"
-        return tool or "执行任务"
+        """根据工具描述与参数生成通用任务展示文案"""
+        tool_name = task.get("tool", "")
+        params = task.get("params", {}) or {}
+        
+        # DocEditTool 特殊处理
+        if tool_name == "DocEditTool":
+            action = params.get("action", "")
+            if action == "create":
+                filename = params.get("filename", "新文档")
+                return f"创建文档: {filename}"
+            elif action == "delete":
+                return "删除文档"
+            elif action == "read":
+                return "读取文档"
+            elif action == "update":
+                return "更新文档内容"
+            elif action == "append":
+                return "追加文档内容"
+            elif action == "replace":
+                return "替换文档内容"
+        
+        meta = toolhub.get_tool(tool_name)
+        desc = (meta.description if meta else tool_name) or "执行任务"
+        # 取一个代表性参数做简短预览（常见键：query、content、action 等）
+        for key in ("query", "content", "filename", "doc_id"):
+            val = params.get(key)
+            if val is not None and str(val).strip():
+                preview = str(val).strip()[:25]
+                if len(str(val).strip()) > 25:
+                    preview += "…"
+                return f"{desc}: {preview}"
+        return desc
+
+
+    def _resolve_task_params(self, tool_name: str, params: dict, previous_results: dict) -> dict:
+        """从之前任务的结果中自动填充缺失参数"""
+        params = dict(params) if params else {}
+        tool_meta = toolhub.get_tool(tool_name)
+        if not tool_meta:
+            return params
+        
+        return tool_meta.resolve_params(params, previous_results)
 
     def _result_summary(self, tool_name: str, result: Any) -> str:
-        """从工具结果生成简短总结"""
+        """从工具结果生成简短总结（通用：按常见返回字段推断）"""
         if not isinstance(result, dict):
             return str(result)[:100]
-        if result.get("success"):
-            if tool_name == "SearchTool" and "results" in result:
-                n = len(result.get("results", []))
-                return f"检索到 {n} 条结果。"
-            if tool_name == "DocEditTool":
-                return result.get("message", "操作完成。")
-        return result.get("error", "执行完成。")[:80]
+        if not result.get("success"):
+            return (result.get("error") or result.get("message") or "执行完成。")[:80]
+        # 成功时优先取文案类字段
+        for key in ("message", "summary", "answer"):
+            val = result.get(key)
+            if val is not None and isinstance(val, str) and val.strip():
+                return val.strip()[:80]
+        # 再按列表类字段生成「共 n 条/项」
+        for key in ("papers", "results", "citations", "content"):
+            val = result.get(key)
+            if isinstance(val, list):
+                n = len(val)
+                return f"共 {n} 条结果。" if n else "无结果。"
+        return "操作完成。"
 
     def _build_chat_messages(self, history: list, system_prompt: str = None) -> list:
         messages = []

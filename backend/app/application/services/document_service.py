@@ -13,6 +13,45 @@ class DocumentService:
     def __init__(self):
         os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
+    def create_document(self, user_id: str, filename: str, content: str = "", file_type: str = "markdown", folder_id: Optional[str] = None) -> dict:
+        """创建新文档（支持 markdown、text、word 格式）"""
+        db = get_db()
+        doc_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        ext_map = {"markdown": ".md", "text": ".txt", "word": ".docx"}
+        ext = ext_map.get(file_type, ".md")
+        stored_name = f"{doc_id}{ext}"
+        file_path = os.path.join(settings.UPLOAD_DIR, stored_name)
+
+        os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+
+        try:
+            if file_type == "word":
+                docx = Document()
+                for line in content.split("\n"):
+                    docx.add_paragraph(line)
+                docx.save(file_path)
+            else:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+            file_size = os.path.getsize(file_path)
+            db.execute(
+                "INSERT INTO documents (id, user_id, folder_id, filename, original_name, file_path, file_size, file_type, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (doc_id, user_id, folder_id, stored_name, filename, file_path, file_size, file_type, "uploaded", now)
+            )
+            db.commit()
+            return {
+                "id": doc_id, "user_id": user_id, "folder_id": folder_id,
+                "filename": stored_name, "original_name": filename,
+                "file_size": file_size, "file_type": file_type,
+                "page_count": 0, "status": "uploaded", "created_at": now
+            }
+        except Exception as e:
+            logger.error(f"创建文档失败: {e}")
+            raise
+
     def upload_document(self, user_id: str, filename: str, file_content: bytes, folder_id: Optional[str] = None) -> dict:
         db = get_db()
         doc_id = str(uuid.uuid4())
