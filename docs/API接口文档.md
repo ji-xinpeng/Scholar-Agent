@@ -1,8 +1,8 @@
 # Scholar Agent 后端 API 接口文档
 
-> 版本: v1.1 | 更新日期: 2026-02-16
+> 版本: v1.2 | 更新日期: 2026-02-17
 >
-> Base URL: `http://localhost:8001/api/v1`
+> Base URL: `http://localhost:8088/api/v1`
 >
 > 通用规则：
 > - 所有 JSON 请求体使用 `Content-Type: application/json`
@@ -58,7 +58,8 @@
   "session_id": "550e8400-e29b-41d4-a716-446655440000",  // 可选，为空则自动创建新会话
   "user_id": "default",
   "mode": "normal",       // "normal" = 普通问答 | "agent" = 智能体模式
-  "web_search": false      // 是否启用联网搜索
+  "web_search": false,     // 是否启用联网搜索
+  "document_ids": ["doc-uuid-1", "doc-uuid-2"]  // 可选，关联的文档ID列表
 }
 ```
 
@@ -69,6 +70,7 @@
 | user_id | string | ❌ | 用户ID，默认 "default" |
 | mode | string | ❌ | "normal" 或 "agent"，默认 "normal" |
 | web_search | boolean | ❌ | 是否联网搜索，默认 false |
+| document_ids | string[] | ❌ | 关联的文档ID列表，文档内容会被自动添加到对话上下文中 |
 
 **响应**: `Content-Type: text/event-stream`
 
@@ -81,28 +83,12 @@
 
 **SSE 事件格式**: 见 [第6节 SSE 事件协议](#6-sse-事件协议)
 
-**额度不足错误 (HTTP 402)**:
-
-当用户免费额度用完或付费余额不足时，返回 HTTP 402：
-
-Response:
-```json
-{
-  "detail": {
-    "reason": "free_quota_exceeded | insufficient_balance",
-    "message": "免费额度已用完...",
-    "balance": 0.0,
-    "model_mode": "free"
-  }
-}
-```
-
 **后端处理流程**:
 1. 若 `session_id` 为空或不存在 → 创建新会话
 2. 将用户消息存入 messages 表
 3. 根据 `mode` 选择处理逻辑：
    - `normal`: 直接生成回答，以 `stream` 事件逐块推送
-   - `agent`: 先推送 `plan` 事件，然后依次推送每个步骤的 `step_start` → `step_progress` → `step_complete`，中间穿插 `stream` 事件
+   - `agent`: 先推送 `plan` 事件（包含 thought），然后依次推送每个步骤的 `step_start` → `step_progress` → `step_complete`（包含 thought_summary），中间穿插 `stream` 事件
 4. 最后推送 `done` 事件
 5. 将助手完整回答存入 messages 表
 
@@ -322,7 +308,51 @@ Response:
 
 ---
 
-### 3.5 移动文档到文件夹
+### 3.5 获取文档内容
+
+### `GET /api/v1/documents/{doc_id}/content`
+
+**响应**:
+```json
+{
+  "content": "文档的文本内容..."
+}
+```
+
+**错误**: 404 — `{"detail": "Document not found or unsupported format"}`
+
+> **支持格式**: markdown、text、docx、pdf（需解析）
+
+---
+
+### 3.6 更新文档内容
+
+### `PUT /api/v1/documents/{doc_id}/content`
+
+**请求体**:
+```json
+{
+  "content": "更新后的文档内容..."
+}
+```
+
+**响应**:
+```json
+{
+  "status": "ok",
+  "content": "更新后的文档内容..."
+}
+```
+
+**错误**: 
+- 400 — `{"detail": "content is required"}`
+- 404 — `{"detail": "Document not found or unsupported format for editing"}`
+
+> **支持格式**: markdown、text、docx
+
+---
+
+### 3.7 移动文档到文件夹
 
 ### `PUT /api/v1/documents/{doc_id}/move`
 
@@ -496,96 +526,6 @@ Response:
 
 ---
 
-### 5.3 充值
-
-### `POST /api/v1/users/recharge`
-
-**请求体**:
-```json
-{
-  "user_id": "default",
-  "amount": 100.0
-}
-```
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| user_id | string | ❌ | 默认 "default" |
-| amount | float | ✅ | 充值金额（元），必须 > 0 |
-
-> 充值后 `model_mode` 自动设为 "paid"，`balance` 累加。
-
-**响应**: 返回更新后的完整用户资料（同 5.1）
-
----
-
-### 5.4 获取费用统计
-
-### `GET /api/v1/users/usage`
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| user_id | string (query) | ❌ | 默认 "default" |
-
-**响应**:
-```json
-{
-  "user_id": "default",
-  "model_mode": "free",
-  "balance": 50.0,
-  "today": {
-    "count": 5,
-    "cost": 0.25,
-    "free_remaining": 15,
-    "free_quota": 20
-  },
-  "total": {
-    "count": 100,
-    "cost": 12.50,
-    "tokens": 0
-  },
-  "pricing": {
-    "normal": 0.05,
-    "agent": 0.20,
-    "free_daily_quota": 20
-  }
-}
-```
-
----
-
-### 5.5 获取用量记录
-
-### `GET /api/v1/users/usage/records`
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| user_id | string (query) | ❌ | 默认 "default" |
-| page | int (query) | ❌ | 页码，默认 1 |
-| page_size | int (query) | ❌ | 每页条数，默认 20 |
-
-**响应**:
-```json
-{
-  "records": [
-    {
-      "id": "uuid",
-      "user_id": "default",
-      "session_id": "session-uuid",
-      "mode": "agent",
-      "cost": 0.20,
-      "token_count": 0,
-      "created_at": "2026-02-16T..."
-    }
-  ],
-  "total": 50,
-  "page": 1,
-  "page_size": 20
-}
-```
-
----
-
 ## 6. SSE 事件协议
 
 > 适用于 `POST /api/v1/chat/chat` 接口的流式响应。
@@ -596,13 +536,13 @@ Response:
 
 | event | 触发模式 | 说明 |
 |-------|---------|------|
-| `plan` | Agent | 推送研究计划（TODO 列表） |
+| `plan` | Agent | 推送研究计划（TODO 列表），包含 thought |
 | `step_start` | Both | 某步骤开始执行 |
 | `step_progress` | Agent | 步骤执行进度更新 |
-| `step_complete` | Both | 某步骤执行完成 |
+| `step_complete` | Both | 某步骤执行完成，包含 thought_summary |
 | `stream` | Both | 流式文本内容片段 |
 | `done` | Both | 全部完成 |
-| `cost` | Both | 本次对话产生的费用 |
+| `doc_updated` | Agent | 文档内容被更新 |
 
 ### 6.2 各事件 data 格式
 
@@ -610,7 +550,7 @@ Response:
 
 ```
 event: plan
-data: {"plan": [{"id": "s1", "action": "检索学术数据库", "tool": "SearchTool", "status": "pending"}, ...], "timestamp": "..."}
+data: {"plan": [{"id": "s1", "action": "检索学术数据库", "tool": "SearchTool", "status": "pending"}, ...], "thought": "分析用户需求...", "timestamp": "..."}
 ```
 
 | 字段 | 说明 |
@@ -619,6 +559,7 @@ data: {"plan": [{"id": "s1", "action": "检索学术数据库", "tool": "SearchT
 | plan[].action | 步骤描述（中文） |
 | plan[].tool | 使用的工具名 |
 | plan[].status | 初始状态，固定 "pending" |
+| thought | Agent 对用户需求的理解和执行思路 |
 
 #### `step_start` — 步骤开始
 
@@ -643,7 +584,7 @@ data: {"step_id": "s1", "progress": 0.5, "message": "已搜索 50% 的数据源"
 
 ```
 event: step_complete
-data: {"step_id": "s1", "result": {"papers_found": 5, "papers": [...]}, "timestamp": "..."}
+data: {"step_id": "s1", "result": {"papers_found": 5, "papers": [...]}, "thought_summary": "检索学术论文 · 找到 5 篇相关文献", "timestamp": "..."}
 ```
 
 #### `stream` — 流式文本片段
@@ -667,26 +608,21 @@ data: {"content": "完整的回答内容...", "timestamp": "..."}
 > 2. 清空流式内容
 > 3. 解除 loading 状态
 
-#### `cost` — 本次对话费用
+#### `doc_updated` — 文档内容更新
 
 ```
-event: cost
-data: {"cost": 0.20, "balance": 99.80, "model_mode": "paid", "timestamp": "..."}
+event: doc_updated
+data: {"doc_id": "doc-uuid-1", "timestamp": "..."}
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| cost | float | 本次对话费用（元） |
-| balance | float | 账户余额（元） |
-| model_mode | string | "free" \| "paid" |
+| doc_id | string | 被更新的文档ID |
 | timestamp | string | 时间戳 |
 
 ### 6.3 普通模式事件流示例
 
 ```
-event: step_start
-data: {"step_id":"answer","action":"生成回答","timestamp":"..."}
-
 event: stream
 data: {"content":"关于这个","timestamp":"..."}
 
@@ -698,43 +634,37 @@ data: {"content":"最新的研究表明...","timestamp":"..."}
 
 event: done
 data: {"content":"关于这个问题，最新的研究表明...","timestamp":"..."}
-
-event: cost
-data: {"cost":0.05,"balance":99.95,"model_mode":"paid","timestamp":"..."}
 ```
 
 ### 6.4 Agent 模式事件流示例
 
 ```
 event: step_start
-data: {"step_id":"plan","action":"分析查询并创建研究计划","timestamp":"..."}
+data: {"step_id":"analyze","action":"分析用户查询","timestamp":"..."}
 
 event: plan
-data: {"plan":[{"id":"s1","action":"检索学术数据库","tool":"SearchTool","status":"pending"},{"id":"s2","action":"筛选与排序结果","tool":"FilterTool","status":"pending"},{"id":"s3","action":"归纳关键发现","tool":"SummarizeTool","status":"pending"},{"id":"s4","action":"生成引用","tool":"CitationTool","status":"pending"}],"timestamp":"..."}
+data: {"plan":[{"id":"s1","action":"检索学术数据库","tool":"SearchTool","tool_input":{"query":"大语言模型推理"},"status":"pending"},{"id":"s2","action":"生成最终答案","tool":null,"tool_input":null,"status":"pending"}],"thought":"分析用户需求并制定执行计划。","timestamp":"..."}
 
 event: step_start
 data: {"step_id":"s1","action":"检索学术数据库","timestamp":"..."}
 
 event: step_progress
-data: {"step_id":"s1","progress":0.2,"message":"已搜索 20% 的数据源","timestamp":"..."}
+data: {"step_id":"s1","progress":0.25,"message":"处理中...","timestamp":"..."}
 
 event: step_progress
-data: {"step_id":"s1","progress":0.5,"message":"已搜索 50% 的数据源","timestamp":"..."}
+data: {"step_id":"s1","progress":0.5,"message":"处理中...","timestamp":"..."}
 
 event: step_progress
-data: {"step_id":"s1","progress":1.0,"message":"已搜索 100% 的数据源","timestamp":"..."}
+data: {"step_id":"s1","progress":0.75,"message":"处理中...","timestamp":"..."}
+
+event: step_progress
+data: {"step_id":"s1","progress":1.0,"message":"处理中...","timestamp":"..."}
 
 event: step_complete
-data: {"step_id":"s1","result":{"papers_found":5,"papers":[...]},"timestamp":"..."}
+data: {"step_id":"s1","result":{"papers_found":5,"papers":[...]},"thought_summary":"检索学术论文 · 找到 5 篇相关文献","timestamp":"..."}
 
 event: step_start
-data: {"step_id":"s2","action":"筛选与排序结果","timestamp":"..."}
-
-event: step_complete
-data: {"step_id":"s2","result":{"filtered_count":4,"papers":[...]},"timestamp":"..."}
-
-event: step_start
-data: {"step_id":"s3","action":"归纳关键发现","timestamp":"..."}
+data: {"step_id":"final","action":"生成最终答案","timestamp":"..."}
 
 event: stream
 data: {"content":"## 研究摘要: ","timestamp":"..."}
@@ -745,22 +675,10 @@ data: {"content":"大语言模型推理\n\n基于","timestamp":"..."}
 ...（更多 stream 事件）
 
 event: step_complete
-data: {"step_id":"s3","result":{"summary_length":1200},"timestamp":"..."}
-
-event: step_start
-data: {"step_id":"s4","action":"生成引用","timestamp":"..."}
-
-event: stream
-data: {"content":"\n\n---\n**References:**\n[1] Vaswani et al...","timestamp":"..."}
-
-event: step_complete
-data: {"step_id":"s4","result":{"citation_count":4},"timestamp":"..."}
+data: {"step_id":"final","result":{"answer_length":1200},"timestamp":"..."}
 
 event: done
 data: {"content":"## 研究摘要: 大语言模型推理\n\n基于...完整内容...","timestamp":"..."}
-
-event: cost
-data: {"cost":0.20,"balance":99.80,"model_mode":"paid","timestamp":"..."}
 ```
 
 ---
@@ -842,20 +760,6 @@ data: {"cost":0.20,"balance":99.80,"model_mode":"paid","timestamp":"..."}
 }
 ```
 
-### 7.6 UsageRecord 用量记录
-
-```json
-{
-  "id": "uuid",
-  "user_id": "string",
-  "session_id": "uuid | null",
-  "mode": "normal | agent",
-  "cost": "float (元)",
-  "token_count": "int",
-  "created_at": "ISO8601"
-}
-```
-
 ---
 
 ## 附录: 错误码
@@ -864,7 +768,6 @@ data: {"cost":0.20,"balance":99.80,"model_mode":"paid","timestamp":"..."}
 |------------|------|
 | 200 | 成功 |
 | 400 | 请求参数错误（空文件、文件过大等） |
-| 402 | 额度不足（免费额度用完或付费余额不足） |
 | 404 | 资源不存在（文档/会话未找到） |
 | 422 | 请求体格式错误（JSON 解析失败等） |
 | 500 | 服务器内部错误 |

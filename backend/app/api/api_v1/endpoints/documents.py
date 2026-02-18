@@ -49,6 +49,18 @@ async def get_document_content(doc_id: str):
     return {"content": content}
 
 
+@router.put("/{doc_id}/content")
+async def update_document_content(doc_id: str, body: dict):
+    """更新文档内容（支持 word、markdown、text 格式）"""
+    content = body.get("content")
+    if content is None:
+        raise HTTPException(status_code=400, detail="content is required")
+    ok = document_service.update_document_content(doc_id, content)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Document not found or unsupported format for editing")
+    return {"status": "ok", "content": content}
+
+
 @router.delete("/{doc_id}")
 async def delete_document(doc_id: str):
     ok = document_service.delete_document(doc_id)

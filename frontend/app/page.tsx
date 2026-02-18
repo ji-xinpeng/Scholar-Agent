@@ -5,7 +5,7 @@ import {
   Send, Globe, Zap, ImagePlus, Sparkles, AlertCircle,
   Upload, FolderPlus, Trash2, FileText, File, FolderOpen,
   ChevronLeft, ChevronRight, Search, Folder, Paperclip,
-  X
+  X, Save
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ChatMessage from "@/components/ChatMessage";
@@ -14,7 +14,7 @@ import {
   fetchSSEChat, getMessages, 
   uploadDocument, getDocuments, deleteDocument,
   createFolder, getFolders, deleteFolder,
-  getDocumentContent
+  getDocumentContent, updateDocumentContent
 } from "@/lib/api";
 import { formatFileSize, formatDate } from "@/lib/utils";
 
@@ -24,6 +24,11 @@ interface Msg {
   content: string;
   image?: string;
   attachments?: any[];
+  metadata?: {
+    task_plan?: TaskStep[];
+    agent_thought?: string;
+    step_thoughts?: Record<string, string>;
+  };
 }
 
 interface Attachment {
@@ -42,6 +47,8 @@ export default function ChatPage() {
   const [mode, setMode] = useState<"normal" | "agent">("normal");
   const [webSearch, setWebSearch] = useState(false);
   const [taskSteps, setTaskSteps] = useState<TaskStep[]>([]);
+  const [agentThought, setAgentThought] = useState<string>("");
+  const [stepThoughts, setStepThoughts] = useState<Record<string, string>>({});
   const [showTaskSteps, setShowTaskSteps] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -65,7 +72,17 @@ export default function ChatPage() {
 
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
   const [docContent, setDocContent] = useState<string | null>(null);
+  const [docEditingContent, setDocEditingContent] = useState<string>("");
+  const [docContentDirty, setDocContentDirty] = useState(false);
+  const [docSaving, setDocSaving] = useState(false);
   const [docLoading, setDocLoading] = useState(false);
+
+  const [paperPanelWidth, setPaperPanelWidth] = useState(288);
+  const [docPanelWidth, setDocPanelWidth] = useState(320);
+  const resizeStartRef = useRef<{ type: "paper" | "doc"; startX: number; startW: number } | null>(null);
+
+  const taskStateRef = useRef({ taskSteps, agentThought, stepThoughts, showTaskSteps });
+  taskStateRef.current = { taskSteps, agentThought, stepThoughts, showTaskSteps };
 
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -80,6 +97,37 @@ export default function ChatPage() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, streamingContent, taskSteps, showTaskSteps, scrollToBottom]);
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      const r = resizeStartRef.current;
+      if (!r) return;
+      const delta = e.clientX - r.startX;
+      if (r.type === "paper") {
+        setPaperPanelWidth((w) => Math.min(480, Math.max(200, w + delta)));
+      } else {
+        setDocPanelWidth((w) => Math.min(560, Math.max(240, w + delta)));
+      }
+      r.startX = e.clientX;
+    };
+    const onMouseUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      resizeStartRef.current = null;
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    return () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+  }, []);
+
+  const startResize = (type: "paper" | "doc", startX: number) => {
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    resizeStartRef.current = { type, startX, startW: type === "paper" ? paperPanelWidth : docPanelWidth };
+  };
 
   const loadDocuments = async () => {
     try {
@@ -98,11 +146,22 @@ export default function ChatPage() {
   const loadSession = async (id: string) => {
     setSessionId(id);
     setTaskSteps([]);
+    setAgentThought("");
+    setStepThoughts({});
     setShowTaskSteps(false);
     setStreamingContent("");
     try {
       const data = await getMessages(id);
-      setMessages((data.messages || []).map((m: any) => ({ id: m.id, role: m.role, content: m.content })));
+      setMessages((data.messages || []).map((m: any) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        metadata: m.metadata ? {
+          task_plan: m.metadata.task_plan,
+          agent_thought: m.metadata.agent_thought,
+          step_thoughts: m.metadata.step_thoughts,
+        } : undefined,
+      })));
     } catch {
       setMessages([]);
     }
@@ -112,6 +171,8 @@ export default function ChatPage() {
     setSessionId(null);
     setMessages([]);
     setTaskSteps([]);
+    setAgentThought("");
+    setStepThoughts({});
     setShowTaskSteps(false);
     setStreamingContent("");
     setAttachments([]);
@@ -155,12 +216,17 @@ export default function ChatPage() {
         setAttachments((prev) => [...prev, newAttachment]);
       }
 
-      uploadDocument(file).then((res) => {
-        setAttachments((prev) => prev.map(a => 
-          a.id === id ? { ...a, uploading: false, docId: res.id } : a
-        ));
-        setSelectedDocumentIds((prev) => [...prev, res.id]);
-      });
+      uploadDocument(file)
+        .then((res) => {
+          setAttachments((prev) => prev.map(a =>
+            a.id === id ? { ...a, uploading: false, docId: res.id } : a
+          ));
+          setSelectedDocumentIds((prev) => [...prev, res.id]);
+        })
+        .catch(() => {
+          setAttachments((prev) => prev.filter(a => a.id !== id));
+          setCostError("文件上传失败，请检查网络或重试");
+        });
     }
     e.target.value = "";
   };
@@ -175,14 +241,36 @@ export default function ChatPage() {
 
   const handleDocumentClick = async (doc: any) => {
     setSelectedDoc(doc);
+    setDocContentDirty(false);
     setDocLoading(true);
     try {
       const res = await getDocumentContent(doc.id);
-      setDocContent(res.content);
+      const content = res.content ?? "";
+      setDocContent(content);
+      setDocEditingContent(content);
     } catch {
       setDocContent(null);
+      setDocEditingContent("");
     } finally {
       setDocLoading(false);
+    }
+  };
+
+  const isDocEditable = (doc: any) =>
+    doc && ["word", "markdown", "text"].includes(doc.file_type);
+
+  const handleSaveDocContent = async () => {
+    if (!selectedDoc || !docContentDirty) return;
+    setDocSaving(true);
+    try {
+      await updateDocumentContent(selectedDoc.id, docEditingContent);
+      setDocContent(docEditingContent);
+      setDocContentDirty(false);
+      setCostError(null);
+    } catch (e: any) {
+      setCostError(e?.message || "保存失败");
+    } finally {
+      setDocSaving(false);
     }
   };
 
@@ -266,10 +354,20 @@ export default function ChatPage() {
     setAttachments([]);
     setIsLoading(true);
     setStreamingContent("");
-    setTaskSteps([]);
-    setShowTaskSteps(false);
     setCostError(null);
     setLastCost(null);
+
+    if (mode === "agent") {
+      setTaskSteps([{ id: "analyze", action: "分析用户查询，制定执行计划...", status: "running" }]);
+      setAgentThought("正在理解您的需求...");
+      setStepThoughts({});
+      setShowTaskSteps(true);
+    } else {
+      setTaskSteps([]);
+      setAgentThought("");
+      setStepThoughts({});
+      setShowTaskSteps(false);
+    }
 
     let accumulated = "";
 
@@ -291,6 +389,8 @@ export default function ChatPage() {
                   status: "pending" as const,
                 }))
               );
+              setAgentThought(data.thought || "");
+              setStepThoughts({});
               setShowTaskSteps(true);
               break;
 
@@ -318,6 +418,9 @@ export default function ChatPage() {
                   s.id === data.step_id ? { ...s, status: "done" as const, progress: 1 } : s
                 )
               );
+              if (data.step_id && data.thought_summary) {
+                setStepThoughts((prev) => ({ ...prev, [data.step_id]: data.thought_summary }));
+              }
               break;
 
             case "stream":
@@ -329,19 +432,45 @@ export default function ChatPage() {
               setLastCost({ cost: data.cost, balance: data.balance });
               break;
 
+            case "doc_updated":
+              if (data.doc_id && selectedDoc?.id === data.doc_id) {
+                getDocumentContent(data.doc_id).then((res) => {
+                  setDocContent(res.content);
+                  setDocEditingContent(res.content ?? "");
+                  setDocContentDirty(false);
+                }).catch(() => {});
+              }
+              break;
+
             case "done":
               break;
           }
         },
         () => {
           if (accumulated) {
-            setMessages((prev) => [...prev, { role: "assistant", content: accumulated }]);
+            const { taskSteps: ts, agentThought: at, stepThoughts: st, showTaskSteps: ssts } = taskStateRef.current;
+            const taskMeta = ssts && ts.length > 0 ? {
+              task_plan: ts.map((s) => ({ id: s.id, action: s.action, status: s.status, progress: s.progress })),
+              agent_thought: at,
+              step_thoughts: st,
+            } : undefined;
+            setMessages((prev) => [...prev, {
+              role: "assistant",
+              content: accumulated,
+              metadata: taskMeta ? { ...taskMeta } : undefined,
+            }]);
           }
           setStreamingContent("");
           setIsLoading(false);
           setSelectedDocumentIds([]);
         },
-        selectedDocumentIds.length > 0 ? selectedDocumentIds : undefined,
+        (() => {
+          const ids = new Set(selectedDocumentIds);
+          if (mode === "agent" && selectedDoc?.id && !ids.has(selectedDoc.id)) {
+            ids.add(selectedDoc.id);
+          }
+          return ids.size > 0 ? Array.from(ids) : undefined;
+        })(),
       );
 
       if (returnedId && !sessionId) {
@@ -380,7 +509,10 @@ export default function ChatPage() {
         onNewChat={handleNewChat}
       />
 
-      <div className="w-72 bg-gray-50 border-r border-gray-200 flex flex-col shrink-0">
+      <div
+        className="bg-gray-50 border-r border-gray-200 flex flex-col shrink-0"
+        style={{ width: paperPanelWidth }}
+      >
         <div className="p-3 border-b border-gray-200">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm font-semibold text-gray-700">我的论文</span>
@@ -546,32 +678,69 @@ export default function ChatPage() {
         )}
       </div>
 
+      <div
+        className="w-1 shrink-0 bg-gray-200 hover:bg-indigo-400 cursor-col-resize flex items-center justify-center group transition-colors select-none"
+        onMouseDown={(e) => { e.preventDefault(); startResize("paper", e.clientX); }}
+        title="拖动调节论文面板宽度"
+      >
+        <div className="w-0.5 h-8 bg-gray-400 group-hover:bg-indigo-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+      </div>
+
       {selectedDoc && (
-        <div className="w-80 bg-white border-r border-gray-200 flex flex-col shrink-0">
+        <>
+        <div
+          className="bg-white border-r border-gray-200 flex flex-col shrink-0"
+          style={{ width: docPanelWidth }}
+        >
           <div className="p-3 border-b border-gray-200 flex items-center justify-between">
             <div className="flex items-center gap-2 min-w-0">
               {fileIcon(selectedDoc.file_type)}
               <span className="text-sm font-semibold text-gray-800 truncate">{selectedDoc.original_name}</span>
             </div>
             <button
-              onClick={() => { setSelectedDoc(null); setDocContent(null); }}
+              onClick={() => { setSelectedDoc(null); setDocContent(null); setDocEditingContent(""); setDocContentDirty(false); }}
               className="p-1 hover:bg-gray-100 rounded"
             >
               <X className="w-4 h-4 text-gray-500" />
             </button>
           </div>
-          <div className="px-3 py-2 border-b border-gray-100 text-xs text-gray-500">
-            {formatFileSize(selectedDoc.file_size)} · {formatDate(selectedDoc.created_at)}
+          <div className="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
+            <span className="text-xs text-gray-500">
+              {formatFileSize(selectedDoc.file_size)} · {formatDate(selectedDoc.created_at)}
+            </span>
+            {isDocEditable(selectedDoc) && docContent != null && (
+              <button
+                onClick={handleSaveDocContent}
+                disabled={!docContentDirty || docSaving}
+                className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-white bg-indigo-500 rounded hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Save className="w-3 h-3" />
+                {docSaving ? "保存中..." : "保存"}
+              </button>
+            )}
           </div>
-          <div className="flex-1 overflow-y-auto p-3">
+          <div className="flex-1 overflow-y-auto p-3 min-h-0">
             {docLoading ? (
               <div className="flex items-center justify-center h-full">
                 <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
               </div>
-            ) : docContent ? (
-              <pre className="text-xs text-gray-700 whitespace-pre-wrap font-sans leading-relaxed">
-                {docContent}
-              </pre>
+            ) : docContent != null ? (
+              isDocEditable(selectedDoc) ? (
+                <textarea
+                  value={docEditingContent}
+                  onChange={(e) => {
+                    setDocEditingContent(e.target.value);
+                    setDocContentDirty(true);
+                  }}
+                  className="w-full h-full min-h-[200px] text-xs text-gray-700 font-sans leading-relaxed p-2 border border-gray-200 rounded-lg outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-200 resize-none"
+                  placeholder="在此编辑文档内容..."
+                  spellCheck={false}
+                />
+              ) : (
+                <pre className="text-xs text-gray-700 whitespace-pre-wrap font-sans leading-relaxed">
+                  {docContent}
+                </pre>
+              )
             ) : (
               <div className="text-center text-gray-400 text-xs mt-8">
                 无法解析或不支持的文件格式
@@ -579,6 +748,15 @@ export default function ChatPage() {
             )}
           </div>
         </div>
+
+        <div
+          className="w-1 shrink-0 bg-gray-200 hover:bg-indigo-400 cursor-col-resize flex items-center justify-center group transition-colors select-none"
+          onMouseDown={(e) => { e.preventDefault(); startResize("doc", e.clientX); }}
+          title="拖动调节显示面板宽度"
+        >
+          <div className="w-0.5 h-8 bg-gray-400 group-hover:bg-indigo-500 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+        </div>
+        </>
       )}
 
       <div 
@@ -620,20 +798,28 @@ export default function ChatPage() {
                 const isLastMessage = i === messages.length - 1;
                 const isLastAssistantMessage = isLastMessage && msg.role === "assistant";
                 const isStreamingActive = !!streamingContent;
-                
+                const useLiveState = isLastAssistantMessage && !isStreamingActive && showTaskSteps && taskSteps.length > 0;
+                const hasTaskFromMsg = msg.role === "assistant" && (msg.metadata?.task_plan?.length ?? 0) > 0;
+                const showTaskBeforeAssistant = msg.role === "assistant" && (useLiveState || hasTaskFromMsg);
+                const taskProps = useLiveState
+                  ? { steps: taskSteps, agentThought, stepThoughts }
+                  : hasTaskFromMsg && msg.metadata
+                    ? { steps: msg.metadata.task_plan || [], agentThought: msg.metadata.agent_thought || "", stepThoughts: msg.metadata.step_thoughts || {} }
+                    : null;
+
                 return (
                   <>
-                    {!isStreamingActive && isLastAssistantMessage && showTaskSteps && taskSteps.length > 0 && (
-                      <div className="flex gap-3" key="task-steps">
+                    {showTaskBeforeAssistant && taskProps && (
+                      <div className="flex gap-3" key={`task-${i}`}>
                         <div className="w-8" />
-                        <TaskProgress steps={taskSteps} />
+                        <TaskProgress {...taskProps} />
                       </div>
                     )}
                     <ChatMessage key={i} role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} />
                     {!isStreamingActive && !isLastAssistantMessage && isLastMessage && showTaskSteps && taskSteps.length > 0 && (
                       <div className="flex gap-3" key="task-steps-end">
                         <div className="w-8" />
-                        <TaskProgress steps={taskSteps} />
+                        <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
                       </div>
                     )}
                   </>
@@ -642,7 +828,7 @@ export default function ChatPage() {
               {!messages.length && !streamingContent && showTaskSteps && taskSteps.length > 0 && (
                 <div className="flex gap-3">
                   <div className="w-8" />
-                  <TaskProgress steps={taskSteps} />
+                  <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
                 </div>
               )}
               {streamingContent && (
@@ -650,7 +836,7 @@ export default function ChatPage() {
                   {showTaskSteps && taskSteps.length > 0 && (
                     <div className="flex gap-3">
                       <div className="w-8" />
-                      <TaskProgress steps={taskSteps} />
+                      <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
                     </div>
                   )}
                   <ChatMessage role="assistant" content={streamingContent} isStreaming />

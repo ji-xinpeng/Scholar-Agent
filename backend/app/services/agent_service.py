@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.logger import logger
 from app.domain.llm_scheduler import MessageRole, llm_service, ChatMessage
 from app.tools.toolhub import toolhub
+from app.services.document_service import document_service
 
 
 class SessionService:
@@ -132,10 +133,12 @@ class AgentService:
         query: str, 
         session_id: str, 
         history: List[dict], 
-        web_search: bool = False
+        web_search: bool = False,
+        document_ids: Optional[List[str]] = None
     ) -> AsyncGenerator[str, None]:
         """Agent模式 - 智能规划、调用工具、生成回答。"""
         logger.info(f"开始Agent聊天 - 会话: {session_id}, 查询: {query[:50]}...")
+        document_ids = document_ids or []
 
         def serialize(obj):
             if hasattr(obj, 'model_dump'):
@@ -157,7 +160,22 @@ class AgentService:
             tool_descriptions.append(desc)
         tool_descriptions = "\n\n".join(tool_descriptions)
 
+        doc_context = ""
+        if document_ids:
+            doc_list = []
+            for did in document_ids:
+                doc = document_service.get_document(did)
+                if doc:
+                    doc_list.append(f"  - {did}: {doc.get('original_name', '')} (可编辑)")
+            if doc_list:
+                doc_context = f"""
+        ## 用户选中的可编辑文档（可使用 DocEditTool 进行增删改查）：
+        {"".join(doc_list)}
+        当用户要求修改、补充、润色或编辑文档时，请使用 DocEditTool，doc_id 从上述列表中选取。
+        """
+
         system_prompt = f"""你是一位智能研究助手 Agent。你的任务是分析用户的查询，自主决定需要哪些步骤，调用合适的工具，并最终生成专业的回答。
+        {doc_context}
 
         ## 可用工具（包含参数说明）：
         {tool_descriptions}
@@ -170,17 +188,15 @@ class AgentService:
         5. 生成最终的专业回答
 
         ## 规划步骤时的 JSON 格式：
-        请直接输出 JSON 格式的计划，不要包含任何其他文本：
+        请直接输出 JSON 格式的计划，不要包含任何其他文本。必须包含 "thought" 字段，用一两句话说明你的理解和执行思路。
         {{
+        "thought": "简要说明你对用户需求的理解和将采取的步骤",
         "plan": [
             {{
             "id": "step_1",
             "action": "执行的动作描述",
             "tool": "要使用的工具名称（如果不需要工具则填 null）",
-            "tool_input": {{
-                "param1": "值1",
-                "param2": "值2"
-            }},
+            "tool_input": {{"param1": "值1"}},
             "status": "pending"
             }}
         ]
@@ -210,17 +226,22 @@ class AgentService:
             if not plan_data:
                 logger.warning("解析计划失败，使用默认计划")
                 plan_data = {
+                    "thought": f"好的，我来帮您处理：{query[:50]}...",
                     "plan": [
                         {"id": "s1", "action": "搜索学术数据库", "tool": "SearchTool", "tool_input": {"query": query}, "status": "pending"},
                         {"id": "s2", "action": "生成最终答案", "tool": None, "tool_input": None, "status": "pending"}
                     ]
                 }
+            if "thought" not in plan_data:
+                plan_data["thought"] = f"正在分析您的需求并制定执行计划。"
 
             logger.info(f"执行计划: {len(plan_data['plan'])} 个步骤")
-            yield self._sse("plan", {"plan": plan_data["plan"]})
+            yield self._sse("plan", {"plan": plan_data["plan"], "thought": plan_data.get("thought", "")})
 
             tool_results = {}
             all_papers = []
+            step_thoughts = {}
+            final_plan_steps = []
 
             for step in plan_data["plan"]:
                 step_id = step["id"]
@@ -253,10 +274,20 @@ class AgentService:
                         all_papers.extend(result["papers"])
                         logger.info(f"找到 {len(result['papers'])} 篇论文")
 
-                    yield self._sse("step_complete", {"step_id": step_id, "result": result})
+                    if tool_name == "DocEditTool" and result and result.get("success") and result.get("action") != "read":
+                        doc_id = tool_params.get("doc_id", "")
+                        if doc_id:
+                            yield self._sse("doc_updated", {"doc_id": doc_id})
+
+                    thought_summary = self._format_step_thought(tool_name, action, result, tool_params)
+                    step_thoughts[step_id] = thought_summary
+                    final_plan_steps.append({"id": step_id, "action": action, "status": "done", "progress": 1})
+                    yield self._sse("step_complete", {"step_id": step_id, "result": result, "thought_summary": thought_summary})
                 else:
                     logger.debug(f"步骤 {step_id} 不需要工具")
-                    yield self._sse("step_complete", {"step_id": step_id, "result": {"message": "步骤完成"}})
+                    step_thoughts[step_id] = action
+                    final_plan_steps.append({"id": step_id, "action": action, "status": "done", "progress": 1})
+                    yield self._sse("step_complete", {"step_id": step_id, "result": {"message": "步骤完成"}, "thought_summary": action})
 
             logger.info("生成最终答案")
             yield self._sse("step_start", {"step_id": "final", "action": "生成最终答案"})
@@ -309,8 +340,17 @@ class AgentService:
                 except Exception as e:
                     logger.warning(f"生成引用失败: {e}")
                     citations.append(f"[{i+1}] {p.get('title', 'Unknown')}.")
+            agent_thought = plan_data.get("thought", "")
             self.session_service.add_message(session_id, "assistant", full_summary, msg_type="text",
-                                            metadata={"mode": "agent", "papers": all_papers, "citations": citations, "tool_results": tool_results})
+                                            metadata={
+                                                "mode": "agent",
+                                                "papers": all_papers,
+                                                "citations": citations,
+                                                "tool_results": tool_results,
+                                                "task_plan": final_plan_steps,
+                                                "agent_thought": agent_thought,
+                                                "step_thoughts": step_thoughts,
+                                            })
             logger.info(f"Agent聊天完成 - 会话: {session_id}")
             yield self._sse("done", {"content": full_summary})
 
@@ -320,6 +360,36 @@ class AgentService:
             yield self._sse("stream", {"content": error_msg})
             self.session_service.add_message(session_id, "assistant", error_msg)
             yield self._sse("done", {"content": error_msg})
+
+    def _format_step_thought(self, tool_name: str, action: str, result: dict, tool_params: dict) -> str:
+        """生成步骤的简要思考描述"""
+        if not result:
+            return action
+        if tool_name == "SearchTool":
+            n = len(result.get("papers", []))
+            return f"检索学术论文 · 找到 {n} 篇相关文献" if n > 0 else "检索学术论文 · 未找到相关文献"
+        if tool_name == "DocEditTool":
+            act = result.get("action", "")
+            fn = ""
+            if act == "read":
+                fn = result.get("filename", tool_params.get("doc_id", ""))[:20]
+                return f"读取文档 · {fn}"
+            if result.get("success"):
+                return f"编辑文档 · {result.get('message', act)}"
+            return f"编辑文档 · {result.get('error', '失败')}"
+        if tool_name == "DocTool":
+            return f"文档管理 · {result.get('result', action)}"
+        if tool_name == "SummarizeTool":
+            return "生成摘要 · 完成"
+        if tool_name == "FilterTool":
+            return "筛选论文 · 完成"
+        if tool_name == "CitationTool":
+            return "生成引用 · 完成"
+        if tool_name == "ProfileTool":
+            return "查询用户画像 · 完成"
+        if tool_name == "MultiModalRAGTool":
+            return "文档检索问答 · 完成"
+        return action
 
     def _parse_plan(self, text: str) -> Optional[Dict[str, Any]]:
         """解析 LLM 返回的计划 JSON"""

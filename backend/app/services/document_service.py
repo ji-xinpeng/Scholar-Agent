@@ -164,6 +164,54 @@ class DocumentService:
         
         return content
 
+    def append_document_content(self, doc_id: str, content_to_append: str) -> bool:
+        """在文档末尾追加内容"""
+        existing = self.get_document_content(doc_id)
+        if existing is None:
+            return False
+        new_content = existing.rstrip("\n") + "\n" + content_to_append
+        return self.update_document_content(doc_id, new_content)
+
+    def replace_document_content(self, doc_id: str, old_text: str, new_text: str) -> bool:
+        """替换文档中的指定文本"""
+        existing = self.get_document_content(doc_id)
+        if existing is None:
+            return False
+        if old_text not in existing:
+            return False
+        new_content = existing.replace(old_text, new_text, 1)
+        return self.update_document_content(doc_id, new_content)
+
+    def update_document_content(self, doc_id: str, content: str) -> bool:
+        """更新文档内容（支持 word、markdown、text 格式）"""
+        doc = self.get_document(doc_id)
+        if not doc:
+            return False
+
+        file_path = doc["file_path"]
+        file_type = doc["file_type"]
+
+        if not os.path.exists(file_path):
+            return False
+
+        try:
+            if file_type == "word" and HAS_DOCX:
+                docx = Document()
+                for line in content.split("\n"):
+                    docx.add_paragraph(line)
+                docx.save(file_path)
+            elif file_type in ["markdown", "text"]:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            else:
+                logger.warning(f"不支持编辑的文件类型: {file_type}")
+                return False
+
+            return True
+        except Exception as e:
+            logger.error(f"更新文档 {doc_id} 失败: {e}")
+            return False
+
     async def parse_document(self, doc_id: str) -> bool:
 
         return True

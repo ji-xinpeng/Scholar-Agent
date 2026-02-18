@@ -60,7 +60,11 @@ async def chat(request: ChatRequest):
         try:
             if request.mode == "agent":
                 logger.info("启动Agent模式聊天")
-                async for chunk in agent_service.run_agent_chat(enhanced_message, session_id, history, web_search=request.web_search):
+                async for chunk in agent_service.run_agent_chat(
+                    enhanced_message, session_id, history,
+                    web_search=request.web_search,
+                    document_ids=request.document_ids
+                ):
                     yield chunk
             else:
                 logger.info("启动普通模式聊天")

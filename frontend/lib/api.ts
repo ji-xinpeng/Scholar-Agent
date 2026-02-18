@@ -1,4 +1,5 @@
 const API_BASE = "/api/v1";
+const BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8088";
 
 // ========== 聊天 / 会话 ==========
 export async function fetchSSEChat(
@@ -21,7 +22,7 @@ export async function fetchSSEChat(
     body.document_ids = documentIds;
   }
   
-  const res = await fetch(`${API_BASE}/chat/chat`, {
+  const res = await fetch(`${BACKEND_BASE}/api/v1/chat/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -104,7 +105,12 @@ export async function uploadDocument(file: File, folderId?: string) {
   formData.append("user_id", "default");
   if (folderId) formData.append("folder_id", folderId);
   const res = await fetch(`${API_BASE}/documents/upload`, { method: "POST", body: formData });
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = typeof data.detail === "string" ? data.detail : data.detail?.message || "上传失败";
+    throw new Error(msg);
+  }
+  return data;
 }
 
 export async function getDocuments(page = 1, pageSize = 10, folderId?: string) {
@@ -121,6 +127,20 @@ export async function deleteDocument(docId: string) {
 export async function getDocumentContent(docId: string) {
   const res = await fetch(`${API_BASE}/documents/${docId}/content`);
   return res.json();
+}
+
+export async function updateDocumentContent(docId: string, content: string) {
+  const res = await fetch(`${API_BASE}/documents/${docId}/content`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = typeof data.detail === "string" ? data.detail : data.detail?.message || "保存失败";
+    throw new Error(msg);
+  }
+  return data;
 }
 
 export async function createFolder(name: string, parentId?: string) {
