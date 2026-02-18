@@ -8,7 +8,7 @@ from typing import AsyncGenerator, Dict, Any
 from app.infrastructure.logging.config import logger
 from app.infrastructure.llm.base import MessageRole, ChatMessage
 from app.infrastructure.llm.service import llm_service
-from app.tools.hub import toolhub
+from app.tools.toolhub import toolhub
 from app.application.services.document_service import document_service
 from app.application.services.session_service import session_service
 
@@ -147,7 +147,9 @@ class AgentOrchestrator:
             yield self._sse("plan", {"plan": plan_steps, "thought": "已制定执行计划。"})
 
             results = {}
+            step_thoughts = {}
             for i, task in enumerate(tasks):
+                logger.debug(f"处理任务 {i}: {task}")
                 tool_name = task.get("tool")
                 params = task.get("params", {})
                 # 自动从之前任务的结果中填充缺失参数
@@ -157,11 +159,21 @@ class AgentOrchestrator:
 
                 yield self._sse("step_start", {"step_id": step_id, "action": action_label, "tool_name": tool_name, "params": params})
                 tool_result = await toolhub.run_tool(tool_name, **params)
+                logger.info(f"{tool_name} 执行结果: {tool_result}")
                 results[tool_name] = tool_result
                 thought_summary = self._result_summary(tool_name, tool_result)
+                step_thoughts[step_id] = thought_summary
                 yield self._sse("step_complete", {"step_id": step_id, "result": tool_result, "thought_summary": thought_summary, "tool_name": tool_name, "params": params})
+                
+                # 如果是文档编辑工具，通知前端刷新文档列表
+                if tool_name == "DocEditTool" and isinstance(tool_result, dict):
+                    action = tool_result.get("action")
+                    doc_id = tool_result.get("doc_id")
+                    if action in ("create", "update", "append", "replace", "delete"):
+                        yield self._sse("doc_updated", {"doc_id": doc_id, "action": action})
 
             # 无工具任务时，标记「生成回答」步骤开始
+            agent_thought = "已制定执行计划。"
             if not tasks:
                 yield self._sse("step_start", {"step_id": "0", "action": "生成回答"})
             yield self._sse("thinking", {"message": "正在生成回答..."})
@@ -177,7 +189,15 @@ class AgentOrchestrator:
             # 无工具任务时，标记「生成回答」步骤完成
             if not tasks:
                 yield self._sse("step_complete", {"step_id": "0", "result": {}, "thought_summary": "回答已生成。"})
-            assistant_msg = session_service.add_message(session_id, "assistant", full_response, "text", {"tools_used": list(results.keys())})
+            
+            # 保存任务计划、思考过程等到消息 metadata
+            msg_metadata = {
+                "tools_used": list(results.keys()),
+                "task_plan": plan_steps,
+                "agent_thought": agent_thought,
+                "step_thoughts": step_thoughts
+            }
+            assistant_msg = session_service.add_message(session_id, "assistant", full_response, "text", msg_metadata)
             yield self._sse("assistant_message", assistant_msg)
             yield self._sse("done", {})
 

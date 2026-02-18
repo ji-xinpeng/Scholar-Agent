@@ -3,6 +3,7 @@ from app.tools.base import BaseTool
 from app.application.services.document_service import document_service
 from app.infrastructure.llm.base import MessageRole, ChatMessage
 from app.infrastructure.llm.service import llm_service
+from app.infrastructure.logging.config import logger
 
 
 class MultiModalRAGTool(BaseTool):
@@ -58,11 +59,11 @@ class MultiModalRAGTool(BaseTool):
 
             prompt = f"""请基于以下文档内容回答用户问题。如果文档中没有相关信息，请诚实地说明。
 
-文档内容:
-{context_text}
+            文档内容:
+            {context_text}
 
-用户问题: {query}
-"""
+            用户问题: {query}
+            """
             messages = [ChatMessage(role=MessageRole.USER, content=prompt)]
             response = await llm_service.chat(messages, temperature=0.7)
             
@@ -76,6 +77,7 @@ class MultiModalRAGTool(BaseTool):
                 "documents_used": len(document_contents)
             }
         except Exception as e:
+            logger.error(f"MultiModalRAGTool 执行失败: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": f"文档检索失败: {str(e)}",

@@ -5,7 +5,9 @@
 """
 import logging
 import sys
+import os
 from typing import Optional
+from app.core.config import settings
 
 
 class ColoredFormatter(logging.Formatter):
@@ -67,8 +69,9 @@ def setup_logger(
         logger.addHandler(console_handler)
 
     if log_file:
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
         file_formatter = logging.Formatter(
-            '%(asctime)s | %(levelname)-8s | %(message)s',
+            '%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
@@ -79,4 +82,4 @@ def setup_logger(
     return logger
 
 
-logger = setup_logger()
+logger = setup_logger(log_file=settings.LOG_FILE_PATH)

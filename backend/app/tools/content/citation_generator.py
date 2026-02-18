@@ -109,6 +109,7 @@ class CitationTool(BaseTool):
                 "message": f"成功生成 {len(citations)} 条引用"
             }
         except Exception as e:
+            logger.error(f"CitationTool 执行失败: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": f"引用生成失败: {str(e)}"

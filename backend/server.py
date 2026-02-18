@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.logger import logger
+from app.infrastructure.logging.config import logger
 from app.api.v1.api import api_router
 
 

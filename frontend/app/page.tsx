@@ -153,7 +153,7 @@ export default function ChatPage() {
     setStreamingContent("");
     try {
       const data = await getMessages(id);
-      setMessages((data.messages || []).map((m: any) => ({
+      const loadedMessages = (data.messages || []).map((m: any) => ({
         id: m.id,
         role: m.role,
         content: m.content,
@@ -162,7 +162,19 @@ export default function ChatPage() {
           agent_thought: m.metadata.agent_thought,
           step_thoughts: m.metadata.step_thoughts,
         } : undefined,
-      })));
+      }));
+      setMessages(loadedMessages);
+      
+      // 从最后一条 assistant 消息中恢复任务显示状态
+      const lastAssistantMsg = [...loadedMessages].reverse().find((m) => m.role === "assistant" && m.metadata);
+      if (lastAssistantMsg?.metadata) {
+        if (lastAssistantMsg.metadata.task_plan?.length > 0) {
+          setTaskSteps(lastAssistantMsg.metadata.task_plan);
+          setAgentThought(lastAssistantMsg.metadata.agent_thought || "");
+          setStepThoughts(lastAssistantMsg.metadata.step_thoughts || {});
+          setShowTaskSteps(true);
+        }
+      }
     } catch {
       setMessages([]);
     }
@@ -455,6 +467,8 @@ export default function ChatPage() {
                   setDocContentDirty(false);
                 }).catch(() => {});
               }
+              // 刷新整个文档列表
+              loadDocuments();
               break;
 
             case "done":

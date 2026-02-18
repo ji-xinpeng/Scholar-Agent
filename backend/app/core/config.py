@@ -11,6 +11,9 @@ class Settings(BaseSettings):
 
     # 上传目录
     UPLOAD_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "uploads")
+    
+    # 日志文件
+    LOG_FILE_PATH: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "app.log")
 
     # 后端端口
     BACKEND_PORT: int = 8088

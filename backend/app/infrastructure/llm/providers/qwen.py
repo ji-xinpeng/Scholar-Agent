@@ -2,6 +2,7 @@ from typing import List, Optional, AsyncGenerator
 import httpx
 
 from app.infrastructure.llm.base import BaseLLM, ChatMessage, ChatResponse, MessageRole
+from app.infrastructure.logging.config import logger
 
 
 class QwenLLM(BaseLLM):
@@ -38,38 +39,42 @@ class QwenLLM(BaseLLM):
         stream: bool = False,
         **kwargs
     ) -> ChatResponse:
-        payload = {
-            "model": self.model,
-            "messages": self._convert_messages(messages),
-            "temperature": temperature,
-            "top_p": top_p,
-            "stream": stream
-        }
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
+        try:
+            payload = {
+                "model": self.model,
+                "messages": self._convert_messages(messages),
+                "temperature": temperature,
+                "top_p": top_p,
+                "stream": stream
+            }
+            if max_tokens:
+                payload["max_tokens"] = max_tokens
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            choice = data["choices"][0]
+            return ChatResponse(
+                content=choice["message"]["content"],
+                model=self.model,
+                usage=data.get("usage", {}),
+                finish_reason=choice.get("finish_reason"),
+                raw_response=data
             )
-            response.raise_for_status()
-            data = response.json()
-
-        choice = data["choices"][0]
-        return ChatResponse(
-            content=choice["message"]["content"],
-            model=self.model,
-            usage=data.get("usage", {}),
-            finish_reason=choice.get("finish_reason"),
-            raw_response=data
-        )
+        except Exception as e:
+            logger.error(f"QwenLLM chat 调用失败: {e}", exc_info=True)
+            raise
 
     async def chat_stream(
         self,
@@ -79,40 +84,45 @@ class QwenLLM(BaseLLM):
         top_p: float = 1.0,
         **kwargs
     ) -> AsyncGenerator[str, None]:
-        payload = {
-            "model": self.model,
-            "messages": self._convert_messages(messages),
-            "temperature": temperature,
-            "top_p": top_p,
-            "stream": True
-        }
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
+        try:
+            payload = {
+                "model": self.model,
+                "messages": self._convert_messages(messages),
+                "temperature": temperature,
+                "top_p": top_p,
+                "stream": True
+            }
+            if max_tokens:
+                payload["max_tokens"] = max_tokens
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            import json
-                            data = json.loads(data_str)
-                            if data["choices"]:
-                                delta = data["choices"][0].get("delta", {})
-                                if "content" in delta:
-                                    yield delta["content"]
-                        except Exception:
-                            continue
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                import json
+                                data = json.loads(data_str)
+                                if data["choices"]:
+                                    delta = data["choices"][0].get("delta", {})
+                                    if "content" in delta:
+                                        yield delta["content"]
+                            except Exception as e:
+                                logger.warning(f"QwenLLM 流数据解析失败: {e}")
+                                continue
+        except Exception as e:
+            logger.error(f"QwenLLM chat_stream 调用失败: {e}", exc_info=True)
+            raise

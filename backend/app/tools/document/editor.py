@@ -23,6 +23,27 @@ class DocEditTool(BaseTool):
         "user_id": {"type": "string", "description": "用户ID（系统自动填充，无需指定）", "required": False}
     }
 
+    def resolve_params(self, params: Dict[str, Any], previous_results: Dict[str, Any]) -> Dict[str, Any]:
+        params = dict(params) if params else {}
+        action = params.get("action", "")
+        summary = previous_results.get("SummarizeTool", {}).get("summary", "")
+        if summary:
+            params["content"] = summary
+        
+        # 如果是创建、更新或追加操作，且没有提供 content，尝试从 SummarizeTool 或其他工具的结果中获取
+        if action in ("create", "update", "append") and not params.get("content"):
+            for prev_tool in ("SummarizeTool",):
+                if prev_tool in previous_results:
+                    prev_result = previous_results[prev_tool]
+                    if isinstance(prev_result, dict) and prev_result.get("success"):
+                        summary = prev_result.get("summary")
+                        if summary:
+                            params["content"] = summary
+                            logger.info(f"{self.name} 自动使用 {prev_tool} 的结果作为 content")
+                            break
+        
+        return params
+
     def get_action_label(self, params: Dict[str, Any]) -> str:
         action = params.get("action", "")
         if action == "create":
@@ -56,6 +77,20 @@ class DocEditTool(BaseTool):
                     return {"success": False, "error": "create 操作需要提供 filename"}
                 if not user_id:
                     return {"success": False, "error": "create 操作需要提供 user_id"}
+                
+                # 从文件名推断文件类型
+                ext_to_type = {
+                    ".md": "markdown",
+                    ".markdown": "markdown",
+                    ".txt": "text",
+                    ".docx": "word",
+                    ".doc": "word"
+                }
+                import os
+                ext = os.path.splitext(filename)[1].lower()
+                if ext in ext_to_type:
+                    file_type = ext_to_type[ext]
+                
                 doc = document_service.create_document(user_id, filename, content, file_type)
                 return {"success": True, "action": "create", "doc_id": doc["id"], "filename": filename, "message": "文档创建成功"}
             

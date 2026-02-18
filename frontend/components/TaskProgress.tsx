@@ -54,7 +54,7 @@ function ToolBadge({ name }: { name: string }) {
 }
 
 function JsonBlock({ data, variant = "input" }: { data: any; variant?: "input" | "output" }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
   let text: string;
   try {
@@ -83,14 +83,12 @@ function JsonBlock({ data, variant = "input" }: { data: any; variant?: "input" |
             <span>输入参数</span>
           </>
         )}
-        {isLong && (
-          <button
-            onClick={() => setCollapsed(!collapsed)}
-            className="ml-auto text-[10px] text-indigo-500 hover:text-indigo-700 font-medium"
-          >
-            {collapsed ? "展开全部" : "收起"}
-          </button>
-        )}
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="ml-auto text-[10px] text-indigo-500 hover:text-indigo-700 font-medium"
+        >
+          {collapsed ? "展开" : "收起"}
+        </button>
       </div>
       <pre
         className={`text-[11px] leading-[1.6] p-3 rounded-lg overflow-x-auto font-mono ${
