@@ -10,6 +10,7 @@ export async function fetchSSEChat(
   onEvent: (event: { type: string; data: any }) => void,
   onDone: () => void,
   documentIds?: string[],
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const body: any = {
     message,
@@ -26,6 +27,7 @@ export async function fetchSSEChat(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
 
   // 处理 402 余额不足等错误
@@ -48,30 +50,37 @@ export async function fetchSSEChat(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    const parts = buffer.split("\n\n");
-    buffer = parts.pop() || "";
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
 
-    for (const part of parts) {
-      const lines = part.split("\n");
-      let eventType = "";
-      let data = "";
-      for (const line of lines) {
-        if (line.startsWith("event: ")) eventType = line.slice(7);
-        if (line.startsWith("data: ")) data = line.slice(6);
-      }
-      if (eventType && data) {
-        try {
-          onEvent({ type: eventType, data: JSON.parse(data) });
-        } catch {}
+      for (const part of parts) {
+        const lines = part.split("\n");
+        let eventType = "";
+        let data = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) eventType = line.slice(7);
+          if (line.startsWith("data: ")) data = line.slice(6);
+        }
+        if (eventType && data) {
+          try {
+            onEvent({ type: eventType, data: JSON.parse(data) });
+          } catch {}
+        }
       }
     }
+  } catch (e: any) {
+    if (e.name !== "AbortError") {
+      throw e;
+    }
+  } finally {
+    onDone();
   }
-  onDone();
   return newSessionId;
 }
 

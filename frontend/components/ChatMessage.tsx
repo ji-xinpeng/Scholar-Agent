@@ -24,28 +24,47 @@ export default function ChatMessage({ role, content, image, attachments, isStrea
 
   const renderMarkdown = (text: string) => {
     let html = text;
-    
+
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+      return `<div class="my-2 rounded-lg overflow-hidden border border-slate-200"><div class="bg-slate-100 px-3 py-1 text-[10px] font-mono text-slate-500 border-b border-slate-200">${lang || "code"}</div><pre class="bg-slate-900 text-slate-200 text-xs p-3 overflow-x-auto leading-relaxed"><code>${code.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre></div>`;
+    });
+
+    html = html.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded text-xs font-mono border border-slate-200">$1</code>');
+
     html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-    
+    html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
+
     const lines = html.split("\n");
-    const result = [];
-    
+    const result: string[] = [];
+    let inList = false;
+
     for (const line of lines) {
       if (line.startsWith("### ")) {
-        result.push(`<h4 class='text-sm font-semibold mt-3 mb-1'>${line.slice(4)}</h4>`);
+        if (inList) { result.push("</ul>"); inList = false; }
+        result.push(`<h4 class='text-sm font-semibold text-slate-800 mt-4 mb-1.5'>${line.slice(4)}</h4>`);
       } else if (line.startsWith("## ")) {
-        result.push(`<h3 class='text-base font-semibold mt-4 mb-2'>${line.slice(3)}</h3>`);
+        if (inList) { result.push("</ul>"); inList = false; }
+        result.push(`<h3 class='text-[15px] font-semibold text-slate-800 mt-5 mb-2'>${line.slice(3)}</h3>`);
       } else if (line.startsWith("# ")) {
-        result.push(`<h2 class='text-lg font-semibold mt-4 mb-2'>${line.slice(2)}</h2>`);
+        if (inList) { result.push("</ul>"); inList = false; }
+        result.push(`<h2 class='text-base font-bold text-slate-900 mt-5 mb-2'>${line.slice(2)}</h2>`);
+      } else if (line.match(/^\d+\.\s/)) {
+        if (inList) { result.push("</ul>"); inList = false; }
+        const content = line.replace(/^\d+\.\s/, "");
+        result.push(`<div class='flex gap-2 my-0.5'><span class='text-indigo-400 font-semibold shrink-0'>${line.match(/^\d+/)![0]}.</span><span>${content}</span></div>`);
       } else if (line.startsWith("- ")) {
-        result.push(`<li class='ml-4 list-disc'>${line.slice(2)}</li>`);
+        if (!inList) { result.push("<ul class='space-y-0.5 my-1'>"); inList = true; }
+        result.push(`<li class='flex gap-2 items-start'><span class='text-indigo-400 mt-[7px] shrink-0'>•</span><span>${line.slice(2)}</span></li>`);
       } else if (line.trim() === "") {
-        result.push("<br/>");
+        if (inList) { result.push("</ul>"); inList = false; }
+        result.push("<div class='h-2'></div>");
       } else {
-        result.push(line);
+        if (inList) { result.push("</ul>"); inList = false; }
+        result.push(`<p class='my-0.5'>${line}</p>`);
       }
     }
-    
+    if (inList) result.push("</ul>");
+
     return result.join("");
   };
 
@@ -56,59 +75,85 @@ export default function ChatMessage({ role, content, image, attachments, isStrea
   };
 
   return (
-    <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
+    <div className={`flex gap-3 animate-fade-in ${isUser ? "flex-row-reverse" : "flex-row"}`}>
+      {/* Avatar */}
       <div
-        className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-          isUser ? "bg-indigo-500" : "bg-gradient-to-br from-purple-500 to-indigo-600"
+        className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-sm ${
+          isUser
+            ? "bg-gradient-to-br from-indigo-500 to-indigo-600"
+            : "bg-gradient-to-br from-violet-500 to-indigo-600"
         }`}
       >
         {isUser ? <User className="w-4 h-4 text-white" /> : <Bot className="w-4 h-4 text-white" />}
       </div>
+
+      {/* Message Bubble */}
       <div
-        className={`max-w-[75%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+        className={`max-w-[80%] text-sm leading-relaxed ${
           isUser
-            ? "bg-indigo-500 text-white rounded-tr-sm"
-            : "bg-white border border-gray-200 text-gray-800 rounded-tl-sm shadow-sm"
+            ? "bg-gradient-to-br from-indigo-500 to-indigo-600 text-white rounded-2xl rounded-tr-md px-4 py-2.5 shadow-sm"
+            : "text-slate-700"
         }`}
       >
+        {/* Image */}
         {image && (
-          <img src={image} alt="用户上传的图片" className="max-w-[240px] rounded-lg mb-2" />
+          <img
+            src={image}
+            alt="用户上传的图片"
+            className="max-w-[280px] rounded-xl mb-2 shadow-sm"
+          />
         )}
+
+        {/* Attachments */}
         {attachments && attachments.length > 0 && (
-          <div className="mb-2 space-y-1">
+          <div className="mb-2 space-y-1.5">
             {attachments.map((attachment) => (
               <div
                 key={attachment.id}
-                className={`flex items-center gap-2 p-2 rounded-lg ${isUser ? "bg-indigo-600/50" : "bg-gray-100"}`}
+                className={`flex items-center gap-2.5 p-2 rounded-lg ${
+                  isUser ? "bg-white/15" : "bg-slate-50 border border-slate-200"
+                }`}
               >
                 {attachment.preview ? (
                   <img src={attachment.preview} alt="" className="w-8 h-8 rounded object-cover" />
                 ) : (
-                  <FileText className={`w-5 h-5 ${isUser ? "text-indigo-200" : "text-gray-500"}`} />
+                  <div className={`w-8 h-8 rounded flex items-center justify-center ${isUser ? "bg-white/10" : "bg-slate-100"}`}>
+                    <FileText className={`w-4 h-4 ${isUser ? "text-indigo-200" : "text-slate-400"}`} />
+                  </div>
                 )}
                 <div className="flex-1 min-w-0">
-                  <span className={`text-xs font-medium truncate ${isUser ? "text-white" : "text-gray-700"}`}>
+                  <div className={`text-xs font-medium truncate ${isUser ? "text-white" : "text-slate-700"}`}>
                     {attachment.file.name}
-                  </span>
-                  <span className={`text-[10px] ${isUser ? "text-indigo-200" : "text-gray-400"}`}>
+                  </div>
+                  <div className={`text-[10px] ${isUser ? "text-indigo-200" : "text-slate-400"}`}>
                     {formatFileSize(attachment.file.size)}
-                  </span>
+                  </div>
                 </div>
               </div>
             ))}
           </div>
         )}
+
+        {/* Content */}
         {content && content !== "[图片]" ? (
-          <div className="break-words prose prose-sm max-w-none" dangerouslySetInnerHTML={{
-            __html: renderMarkdown(content)
-          }} />
+          <div
+            className={`break-words ${isUser ? "" : "prose-agent"}`}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+          />
         ) : !image && (!attachments || attachments.length === 0) && isStreaming ? (
-          <div className="flex items-center gap-1.5">
-            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+          <div className="flex items-center gap-1 py-1">
+            <div className="flex gap-1">
+              <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+              <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+              <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+            </div>
           </div>
         ) : null}
+
+        {/* Streaming cursor */}
+        {isStreaming && content && (
+          <span className="inline-block w-0.5 h-4 bg-indigo-500 animate-blink ml-0.5 align-middle" />
+        )}
       </div>
     </div>
   );

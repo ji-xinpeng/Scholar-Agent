@@ -58,6 +58,7 @@ export default function ChatPage() {
   const [lastCost, setLastCost] = useState<{cost: number; balance: number} | null>(null);
   const [costError, setCostError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
 
   const [documents, setDocuments] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
@@ -369,6 +370,8 @@ export default function ChatPage() {
       setShowTaskSteps(false);
     }
 
+    const controller = new AbortController();
+    setAbortController(controller);
     let accumulated = "";
 
     try {
@@ -381,12 +384,17 @@ export default function ChatPage() {
           const { type, data } = event;
 
           switch (type) {
+            case "thinking":
+              if (data.message) setAgentThought(data.message);
+              break;
             case "plan":
               setTaskSteps(
                 (data.plan || []).map((s: any) => ({
                   id: s.id,
                   action: s.action,
                   status: "pending" as const,
+                  tool_name: s.tool_name,
+                  params: s.params,
                 }))
               );
               setAgentThought(data.thought || "");
@@ -397,7 +405,7 @@ export default function ChatPage() {
             case "step_start":
               setTaskSteps((prev) =>
                 prev.map((s) =>
-                  s.id === data.step_id ? { ...s, status: "running" as const, message: "" } : s
+                  s.id === data.step_id ? { ...s, status: "running" as const, message: "", tool_name: data.tool_name, params: data.params } : s
                 )
               );
               break;
@@ -415,7 +423,14 @@ export default function ChatPage() {
             case "step_complete":
               setTaskSteps((prev) =>
                 prev.map((s) =>
-                  s.id === data.step_id ? { ...s, status: "done" as const, progress: 1 } : s
+                  s.id === data.step_id ? { 
+                    ...s, 
+                    status: "done" as const, 
+                    progress: 1,
+                    tool_name: data.tool_name,
+                    params: data.params,
+                    result: data.result
+                  } : s
                 )
               );
               if (data.step_id && data.thought_summary) {
@@ -450,7 +465,15 @@ export default function ChatPage() {
           if (accumulated) {
             const { taskSteps: ts, agentThought: at, stepThoughts: st, showTaskSteps: ssts } = taskStateRef.current;
             const taskMeta = ssts && ts.length > 0 ? {
-              task_plan: ts.map((s) => ({ id: s.id, action: s.action, status: s.status, progress: s.progress })),
+              task_plan: ts.map((s) => ({ 
+                id: s.id, 
+                action: s.action, 
+                status: s.status, 
+                progress: s.progress,
+                tool_name: s.tool_name,
+                params: s.params,
+                result: s.result
+              })),
               agent_thought: at,
               step_thoughts: st,
             } : undefined;
@@ -462,6 +485,7 @@ export default function ChatPage() {
           }
           setStreamingContent("");
           setIsLoading(false);
+          setAbortController(null);
           setSelectedDocumentIds([]);
         },
         (() => {
@@ -471,6 +495,7 @@ export default function ChatPage() {
           }
           return ids.size > 0 ? Array.from(ids) : undefined;
         })(),
+        controller.signal,
       );
 
       if (returnedId && !sessionId) {
@@ -478,9 +503,41 @@ export default function ChatPage() {
       }
     } catch (err: any) {
       setIsLoading(false);
-      if (err?.status === 402 || err?.message?.includes("402")) {
+      setAbortController(null);
+      if (err?.name === "AbortError") {
+        // 被用户中断，正常处理
+        if (accumulated) {
+          const { taskSteps: ts, agentThought: at, stepThoughts: st, showTaskSteps: ssts } = taskStateRef.current;
+          const taskMeta = ssts && ts.length > 0 ? {
+            task_plan: ts.map((s) => ({ 
+              id: s.id, 
+              action: s.action, 
+              status: s.status, 
+              progress: s.progress,
+              tool_name: s.tool_name,
+              params: s.params,
+              result: s.result
+            })),
+            agent_thought: at,
+            step_thoughts: st,
+          } : undefined;
+          setMessages((prev) => [...prev, {
+            role: "assistant",
+            content: accumulated + "\n\n[已停止]",
+            metadata: taskMeta ? { ...taskMeta } : undefined,
+          }]);
+        }
+        setStreamingContent("");
+        setSelectedDocumentIds([]);
+      } else if (err?.status === 402 || err?.message?.includes("402")) {
         setCostError(err?.detail?.message || "额度不足，请充值后重试。");
       }
+    }
+  };
+
+  const handleStop = () => {
+    if (abortController) {
+      abortController.abort();
     }
   };
 
@@ -768,14 +825,14 @@ export default function ChatPage() {
         <div className={`flex-1 overflow-y-auto transition-colors ${isDragOver ? "bg-indigo-50" : ""}`}>
           {messages.length === 0 && !isLoading ? (
             <div className="flex flex-col items-center justify-center h-full text-center px-4">
-              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center mb-4">
-                <Sparkles className="w-8 h-8 text-white" />
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 via-violet-500 to-purple-600 flex items-center justify-center mb-5 shadow-lg shadow-indigo-200/50">
+                <Sparkles className="w-7 h-7 text-white" />
               </div>
-              <h2 className="text-xl font-semibold text-gray-800 mb-2">Scholar Agent</h2>
-              <p className="text-gray-500 text-sm max-w-md mb-4">
-                AI驱动的智能学术研究助手。你可以提问、搜索论文，或从左侧拖拽论文到此处进行分析。
+              <h2 className="text-xl font-bold text-slate-800 mb-1.5">Scholar Agent</h2>
+              <p className="text-slate-500 text-sm max-w-md mb-6 leading-relaxed">
+                AI驱动的智能学术研究助手。提问、搜索论文，或从左侧拖拽论文分析。
               </p>
-              <div className="grid grid-cols-2 gap-3 max-w-lg">
+              <div className="grid grid-cols-2 gap-2.5 max-w-lg">
                 {[
                   "大语言模型推理能力的最新进展有哪些？",
                   "解释一下 Transformer 架构",
@@ -785,7 +842,7 @@ export default function ChatPage() {
                   <button
                     key={q}
                     onClick={() => { setInput(q); inputRef.current?.focus(); }}
-                    className="text-left text-sm p-3 rounded-xl border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-colors text-gray-600"
+                    className="text-left text-[13px] p-3.5 rounded-xl border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50 hover:shadow-sm transition-all text-slate-600 leading-relaxed"
                   >
                     {q}
                   </button>
@@ -793,7 +850,7 @@ export default function ChatPage() {
               </div>
             </div>
           ) : (
-            <div className="max-w-3xl mx-auto p-6 space-y-5">
+            <div className="max-w-3xl mx-auto px-6 py-5 space-y-4">
               {messages.map((msg, i) => {
                 const isLastMessage = i === messages.length - 1;
                 const isLastAssistantMessage = isLastMessage && msg.role === "assistant";
@@ -808,63 +865,77 @@ export default function ChatPage() {
                     : null;
 
                 return (
-                  <>
-                    {showTaskBeforeAssistant && taskProps && (
-                      <div className="flex gap-3" key={`task-${i}`}>
-                        <div className="w-8" />
-                        <TaskProgress {...taskProps} />
+                  <div key={i}>
+                    {msg.role === "user" && (
+                      <ChatMessage role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} />
+                    )}
+                    {msg.role === "assistant" && (
+                      <div className="space-y-3">
+                        {/* Agent execution trace */}
+                        {showTaskBeforeAssistant && taskProps && (
+                          <div className="flex gap-3">
+                            <div className="w-8 shrink-0" />
+                            <TaskProgress {...taskProps} />
+                          </div>
+                        )}
+                        {/* Assistant response */}
+                        <ChatMessage role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} />
                       </div>
                     )}
-                    <ChatMessage key={i} role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} />
+                    {/* Live task steps after last user message when no assistant message yet */}
                     {!isStreamingActive && !isLastAssistantMessage && isLastMessage && showTaskSteps && taskSteps.length > 0 && (
-                      <div className="flex gap-3" key="task-steps-end">
-                        <div className="w-8" />
+                      <div className="flex gap-3 mt-3">
+                        <div className="w-8 shrink-0" />
                         <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
                       </div>
                     )}
-                  </>
+                  </div>
                 );
               })}
+
+              {/* Live task steps when no messages yet */}
               {!messages.length && !streamingContent && showTaskSteps && taskSteps.length > 0 && (
                 <div className="flex gap-3">
-                  <div className="w-8" />
+                  <div className="w-8 shrink-0" />
                   <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
                 </div>
               )}
+
+              {/* Streaming: show live task + streaming content */}
               {streamingContent && (
-                <>
+                <div className="space-y-3">
                   {showTaskSteps && taskSteps.length > 0 && (
                     <div className="flex gap-3">
-                      <div className="w-8" />
+                      <div className="w-8 shrink-0" />
                       <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
                     </div>
                   )}
                   <ChatMessage role="assistant" content={streamingContent} isStreaming />
-                </>
+                </div>
               )}
+
+              {/* Loading placeholder */}
               {isLoading && !streamingContent && taskSteps.length === 0 && (
                 <ChatMessage role="assistant" content="" isStreaming />
               )}
-              {lastCost && lastCost.cost > 0 && (
-                <div className="flex justify-center">
-                  <span className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-full">
-                    本次消耗 ¥{lastCost.cost.toFixed(2)} · 余额 ¥{lastCost.balance.toFixed(2)}
+
+              {/* Cost display */}
+              {lastCost && (
+                <div className="flex justify-center pt-1">
+                  <span className="text-[11px] text-slate-400 bg-slate-50 border border-slate-100 px-3 py-1 rounded-full">
+                    {lastCost.cost > 0
+                      ? `本次消耗 ¥${lastCost.cost.toFixed(2)} · 余额 ¥${lastCost.balance.toFixed(2)}`
+                      : `免费额度 · 余额 ¥${lastCost.balance.toFixed(2)}`}
                   </span>
                 </div>
               )}
-              {lastCost && lastCost.cost === 0 && messages.length > 0 && (
-                <div className="flex justify-center">
-                  <span className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-full">
-                    免费额度 · 余额 ¥{lastCost.balance.toFixed(2)}
-                  </span>
-                </div>
-              )}
+
               <div ref={endRef} />
             </div>
           )}
         </div>
 
-        <div className="border-t border-gray-200 bg-white p-4">
+        <div className="border-t border-slate-200/80 bg-white p-4">
           <div className="max-w-3xl mx-auto">
             {costError && (
               <div className="mb-3 flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
@@ -875,13 +946,13 @@ export default function ChatPage() {
               </div>
             )}
             
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center gap-1.5 mb-2.5">
               <button
                 onClick={() => setMode(mode === "normal" ? "agent" : "normal")}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                   mode === "agent"
-                    ? "bg-indigo-100 text-indigo-700 ring-1 ring-indigo-300"
-                    : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                    ? "bg-indigo-500 text-white shadow-sm shadow-indigo-200"
+                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
                 }`}
               >
                 <Zap className="w-3.5 h-3.5" />
@@ -889,10 +960,10 @@ export default function ChatPage() {
               </button>
               <button
                 onClick={() => setWebSearch(!webSearch)}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                   webSearch
-                    ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-300"
-                    : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                    ? "bg-emerald-500 text-white shadow-sm shadow-emerald-200"
+                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
                 }`}
               >
                 <Globe className="w-3.5 h-3.5" />
@@ -944,7 +1015,7 @@ export default function ChatPage() {
               </div>
             )}
 
-            <div className="flex items-end gap-2 bg-gray-50 border border-gray-200 rounded-2xl p-2 focus-within:border-indigo-300 focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
+            <div className="flex items-end gap-2 bg-slate-50/80 border border-slate-200 rounded-xl p-2 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100/60 focus-within:bg-white transition-all shadow-sm">
               <input
                 ref={imageInputRef}
                 type="file"
@@ -960,20 +1031,32 @@ export default function ChatPage() {
                 className="hidden"
                 onChange={handleFileSelect}
               />
-              <button
-                onClick={() => imageInputRef.current?.click()}
-                className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-200 shrink-0"
-                title="上传图片"
-              >
-                <ImagePlus className="w-5 h-5" />
-              </button>
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-200 shrink-0"
-                title="上传文件"
-              >
-                <Paperclip className="w-5 h-5" />
-              </button>
+              {isLoading ? (
+                <button
+                  onClick={handleStop}
+                  className="p-2 text-red-500 hover:text-red-600 rounded-lg hover:bg-red-50 shrink-0 transition-colors"
+                  title="停止生成"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => imageInputRef.current?.click()}
+                    className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-200 shrink-0"
+                    title="上传图片"
+                  >
+                    <ImagePlus className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-200 shrink-0"
+                    title="上传文件"
+                  >
+                    <Paperclip className="w-5 h-5" />
+                  </button>
+                </>
+              )}
               <textarea
                 ref={inputRef}
                 value={input}
@@ -983,14 +1066,24 @@ export default function ChatPage() {
                 placeholder={mode === "agent" ? "描述你的研究任务或拖拽论文..." : "输入你的问题或拖拽论文..."}
                 className="flex-1 resize-none bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400 max-h-32 py-2"
                 style={{ minHeight: "36px" }}
+                disabled={isLoading}
               />
-              <button
-                onClick={handleSubmit}
-                disabled={(!input.trim() && !imagePreview && attachments.length === 0) || isLoading}
-                className="p-2 bg-indigo-500 text-white rounded-xl hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
-              >
-                <Send className="w-4 h-4" />
-              </button>
+              {isLoading ? (
+                <button
+                  onClick={handleStop}
+                  className="p-2 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSubmit}
+                  disabled={(!input.trim() && !imagePreview && attachments.length === 0)}
+                  className="p-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow shrink-0"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.logger import logger
-from app.api.api_v1.api import api_router
+from app.api.v1.api import api_router
 
 
 @asynccontextmanager
@@ -53,10 +53,10 @@ async def health():
 
 def open_browser():
     time.sleep(1.5)
-    url = "http://localhost:8088"
+    url = f"http://localhost:{settings.BACKEND_PORT}"
     webbrowser.open(url)
 
 
 if __name__ == "__main__":
     threading.Thread(target=open_browser, daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=8088)
+    uvicorn.run(app, host="0.0.0.0", port=settings.BACKEND_PORT)
