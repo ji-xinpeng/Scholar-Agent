@@ -1,6 +1,6 @@
 "use client";
 
-import { User, Bot, FileText } from "lucide-react";
+import { User, Bot, FileText, ExternalLink } from "lucide-react";
 
 interface FileAttachment {
   id: string;
@@ -17,13 +17,30 @@ interface ChatMessageProps {
   image?: string;
   attachments?: FileAttachment[];
   isStreaming?: boolean;
+  onDocRefClick?: (docId: string) => void;
 }
 
-export default function ChatMessage({ role, content, image, attachments, isStreaming }: ChatMessageProps) {
+export default function ChatMessage({ role, content, image, attachments, isStreaming, onDocRefClick }: ChatMessageProps) {
   const isUser = role === "user";
+
+  const handleDocRefClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    const docRef = target.closest('[data-doc-id]');
+    if (docRef && onDocRefClick) {
+      e.preventDefault();
+      const docId = docRef.getAttribute('data-doc-id');
+      if (docId) {
+        onDocRefClick(docId);
+      }
+    }
+  };
 
   const renderMarkdown = (text: string) => {
     let html = text;
+
+    html = html.replace(/\[文档引用: ([^\]]+)\]\(([^)]+)\)/g, (_m, docName, docId) => {
+      return `<span class="doc-ref inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md text-xs cursor-pointer hover:bg-indigo-100 transition-colors border border-indigo-200" data-doc-id="${docId}"><ExternalLink class="w-3 h-3" />${docName}</span>`;
+    });
 
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
       return `<div class="my-2 rounded-lg overflow-hidden border border-slate-200"><div class="bg-slate-100 px-3 py-1 text-[10px] font-mono text-slate-500 border-b border-slate-200">${lang || "code"}</div><pre class="bg-slate-900 text-slate-200 text-xs p-3 overflow-x-auto leading-relaxed"><code>${code.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre></div>`;
@@ -138,6 +155,7 @@ export default function ChatMessage({ role, content, image, attachments, isStrea
         {content && content !== "[图片]" ? (
           <div
             className={`break-words ${isUser ? "" : "prose-agent"}`}
+            onClick={handleDocRefClick}
             dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
           />
         ) : !image && (!attachments || attachments.length === 0) && isStreaming ? (

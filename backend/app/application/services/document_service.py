@@ -13,6 +13,12 @@ class DocumentService:
     def __init__(self):
         os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
+    def _get_user_upload_dir(self, user_id: str) -> str:
+        """获取用户上传目录"""
+        user_dir = os.path.join(settings.UPLOAD_DIR, user_id)
+        os.makedirs(user_dir, exist_ok=True)
+        return user_dir
+
     def create_document(self, user_id: str, filename: str, content: str = "", file_type: str = "markdown", folder_id: Optional[str] = None) -> dict:
         """创建新文档（支持 markdown、text、word 格式）"""
         db = get_db()
@@ -22,9 +28,8 @@ class DocumentService:
         ext_map = {"markdown": ".md", "text": ".txt", "word": ".docx"}
         ext = ext_map.get(file_type, ".md")
         stored_name = f"{doc_id}{ext}"
-        file_path = os.path.join(settings.UPLOAD_DIR, stored_name)
-
-        os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+        user_dir = self._get_user_upload_dir(user_id)
+        file_path = os.path.join(user_dir, stored_name)
 
         try:
             if file_type == "word":
@@ -62,7 +67,8 @@ class DocumentService:
         file_type = file_type_map.get(ext, "other")
 
         stored_name = f"{doc_id}{ext}"
-        file_path = os.path.join(settings.UPLOAD_DIR, stored_name)
+        user_dir = self._get_user_upload_dir(user_id)
+        file_path = os.path.join(user_dir, stored_name)
         with open(file_path, "wb") as f:
             f.write(file_content)
 
@@ -103,6 +109,30 @@ class DocumentService:
         db = get_db()
         row = db.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
         return dict(row) if row else None
+    
+    def find_existing_paper(self, user_id: str, pdf_url: Optional[str] = None, title: Optional[str] = None) -> Optional[dict]:
+        """查找是否已存在相同的论文（通过原始文件名匹配）"""
+        db = get_db()
+        
+        if not title:
+            return None
+        
+        safe_title = "".join([c if c.isalnum() or c in (' ', '-', '_') else '_' for c in title])
+        filename_pattern = f"%{safe_title[:30]}%.pdf"
+        
+        rows = db.execute(
+            "SELECT * FROM documents WHERE user_id = ? AND original_name LIKE ? ORDER BY created_at DESC LIMIT 5",
+            (user_id, filename_pattern)
+        ).fetchall()
+        
+        if rows:
+            for row in rows:
+                doc = dict(row)
+                original_name = doc.get("original_name", "")
+                if safe_title.lower() in original_name.lower():
+                    return doc
+        
+        return None
 
     def delete_document(self, doc_id: str) -> bool:
         db = get_db()

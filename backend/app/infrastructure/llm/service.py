@@ -33,23 +33,25 @@ class LLMService:
                 model=settings.DEEPSEEK_MODEL
             ))
 
-    def get_llm(self, provider: Optional[str] = None) -> BaseLLM:
+    def get_llm(self, provider: Optional[str] = None, model: Optional[str] = None) -> BaseLLM:
         """
         获取 LLM 实例
 
         Args:
             provider: 提供商名称，不提供则使用默认
+            model: 模型名称，不提供则使用默认模型
 
         Returns:
             BaseLLM 实例
         """
         provider = provider or settings.DEFAULT_LLM_PROVIDER
-        return llm_factory.create(provider)
+        return llm_factory.create(provider, model=model)
 
     async def chat(
         self,
         messages: List[ChatMessage],
         provider: Optional[str] = None,
+        model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         top_p: float = 1.0,
@@ -62,6 +64,7 @@ class LLMService:
         Args:
             messages: 消息列表
             provider: 提供商名称
+            model: 模型名称
             temperature: 温度参数
             max_tokens: 最大 token 数
             top_p: top_p 参数
@@ -72,8 +75,8 @@ class LLMService:
             ChatResponse
         """
         provider = provider or settings.DEFAULT_LLM_PROVIDER
-        logger.debug(f"调用大模型聊天 - 提供商: {provider}, 消息数: {len(messages)}, 温度: {temperature}")
-        llm = self.get_llm(provider)
+        logger.debug(f"调用大模型聊天 - 提供商: {provider}, 模型: {model or '默认'}, 消息数: {len(messages)}, 温度: {temperature}")
+        llm = self.get_llm(provider, model=model)
         response = await llm.chat(
             messages=messages,
             temperature=temperature,
@@ -89,6 +92,7 @@ class LLMService:
         self,
         messages: List[ChatMessage],
         provider: Optional[str] = None,
+        model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         top_p: float = 1.0,
@@ -100,6 +104,7 @@ class LLMService:
         Args:
             messages: 消息列表
             provider: 提供商名称
+            model: 模型名称
             temperature: 温度参数
             max_tokens: 最大 token 数
             top_p: top_p 参数
@@ -109,8 +114,8 @@ class LLMService:
             文本片段
         """
         provider = provider or settings.DEFAULT_LLM_PROVIDER
-        logger.debug(f"开始大模型流式聊天 - 提供商: {provider}, 消息数: {len(messages)}, 温度: {temperature}")
-        llm = self.get_llm(provider)
+        logger.debug(f"开始大模型流式聊天 - 提供商: {provider}, 模型: {model or '默认'}, 消息数: {len(messages)}, 温度: {temperature}")
+        llm = self.get_llm(provider, model=model)
         chunk_count = 0
         async for chunk in llm.chat_stream(
             messages=messages,

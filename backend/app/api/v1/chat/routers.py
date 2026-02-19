@@ -55,12 +55,29 @@ async def chat(request: ChatRequest):
                 async for chunk in agent_service.run_agent_chat(
                     enhanced_message, session_id, history,
                     web_search=request.web_search,
-                    document_ids=request.document_ids
+                    document_ids=request.document_ids,
+                    provider=request.provider,
+                    model=request.model
+                ):
+                    yield chunk
+            elif request.mode == "paper_qa":
+                logger.info("启动论文问答模式聊天")
+                async for chunk in agent_service.run_paper_qa_chat(
+                    request.message, session_id, history,
+                    document_ids=request.document_ids,
+                    provider=request.provider,
+                    model=request.model
                 ):
                     yield chunk
             else:
                 logger.info("启动普通模式聊天")
-                async for chunk in agent_service.run_normal_chat(enhanced_message, session_id, history, web_search=request.web_search, document_ids=request.document_ids):
+                async for chunk in agent_service.run_normal_chat(
+                    enhanced_message, session_id, history, 
+                    web_search=request.web_search, 
+                    document_ids=request.document_ids,
+                    provider=request.provider,
+                    model=request.model
+                ):
                     yield chunk
             logger.info("聊天生成成功完成")
         except Exception as e:

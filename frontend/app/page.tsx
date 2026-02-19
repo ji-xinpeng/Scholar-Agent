@@ -5,7 +5,7 @@ import {
   Send, Globe, ImagePlus, Sparkles, AlertCircle,
   Upload, FolderPlus, Trash2, FileText, File, FolderOpen,
   ChevronLeft, ChevronRight, Search, Folder, Paperclip,
-  X, Save, MessageCircle, Bot
+  X, Save, MessageCircle, Bot, Quote
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ChatMessage from "@/components/ChatMessage";
@@ -44,7 +44,7 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"normal" | "agent">("normal");
+  const [mode, setMode] = useState<"normal" | "agent" | "paper_qa">("normal");
   const [webSearch, setWebSearch] = useState(false);
   const [taskSteps, setTaskSteps] = useState<TaskStep[]>([]);
   const [agentThought, setAgentThought] = useState<string>("");
@@ -81,6 +81,10 @@ export default function ChatPage() {
   const [paperPanelWidth, setPaperPanelWidth] = useState(288);
   const [docPanelWidth, setDocPanelWidth] = useState(320);
   const resizeStartRef = useRef<{ type: "paper" | "doc"; startX: number; startW: number } | null>(null);
+  
+  const [selectedText, setSelectedText] = useState<string>("");
+  const [selectionMenuPosition, setSelectionMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const docContentRef = useRef<HTMLDivElement>(null);
 
   const taskStateRef = useRef({ taskSteps, agentThought, stepThoughts, showTaskSteps });
   taskStateRef.current = { taskSteps, agentThought, stepThoughts, showTaskSteps };
@@ -95,9 +99,80 @@ export default function ChatPage() {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
+  const handleTextSelection = useCallback((e?: any) => {
+    setTimeout(() => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) {
+        setSelectionMenuPosition(null);
+        setSelectedText("");
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      const text = selection.toString().trim();
+
+      if (!text) {
+        setSelectionMenuPosition(null);
+        setSelectedText("");
+        return;
+      }
+
+      if (docContentRef.current && docContentRef.current.contains(range.commonAncestorContainer)) {
+        const rect = range.getBoundingClientRect();
+        setSelectedText(text);
+        setSelectionMenuPosition({
+          x: rect.left + rect.width / 2,
+          y: rect.top - 10
+        });
+      } else {
+        setSelectionMenuPosition(null);
+        setSelectedText("");
+      }
+    }, 10);
+  }, []);
+
+  const addToChat = useCallback(() => {
+    if (!selectedText || !selectedDoc) return;
+    const quotedText = `> ${selectedText.replace(/\n/g, "\n> ")}`;
+    const docMarker = `[文档引用: ${selectedDoc.original_name}](${selectedDoc.id})`;
+    setInput((prev) => prev + (prev ? "\n\n" : "") + `${quotedText}\n\n${docMarker}`);
+    
+    if (!selectedDocumentIds.includes(selectedDoc.id)) {
+      setSelectedDocumentIds((prev) => [...prev, selectedDoc.id]);
+    }
+    
+    setSelectionMenuPosition(null);
+    setSelectedText("");
+    window.getSelection()?.removeAllRanges();
+    inputRef.current?.focus();
+  }, [selectedText, selectedDoc, selectedDocumentIds]);
+
+  const clearSelection = useCallback(() => {
+    setSelectionMenuPosition(null);
+    setSelectedText("");
+  }, []);
+
+  const handleDocRefClick = useCallback((docId: string) => {
+    const doc = documents.find((d) => d.id === docId);
+    if (doc) {
+      handleDocumentClick(doc);
+    }
+  }, [documents]);
+
   useEffect(() => {
     scrollToBottom();
   }, [messages, streamingContent, taskSteps, showTaskSteps, scrollToBottom]);
+
+  useEffect(() => {
+    document.addEventListener("mousedown", (e) => {
+      if (selectionMenuPosition) {
+        const target = e.target as HTMLElement;
+        if (!target.closest(".selection-menu")) {
+          clearSelection();
+        }
+      }
+    });
+  }, [selectionMenuPosition, clearSelection]);
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
@@ -790,7 +865,7 @@ export default function ChatPage() {
               </button>
             )}
           </div>
-          <div className="flex-1 overflow-y-auto p-3 min-h-0">
+          <div className="flex-1 overflow-y-auto p-3 min-h-0 relative" ref={docContentRef}>
             {docLoading ? (
               <div className="flex items-center justify-center h-full">
                 <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
@@ -803,18 +878,42 @@ export default function ChatPage() {
                     setDocEditingContent(e.target.value);
                     setDocContentDirty(true);
                   }}
+                  onMouseUp={handleTextSelection}
+                  onKeyUp={handleTextSelection}
                   className="w-full h-full min-h-[200px] text-xs text-gray-700 font-sans leading-relaxed p-2 border border-gray-200 rounded-lg outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-200 resize-none"
                   placeholder="在此编辑文档内容..."
                   spellCheck={false}
                 />
               ) : (
-                <pre className="text-xs text-gray-700 whitespace-pre-wrap font-sans leading-relaxed">
+                <pre 
+                  className="text-xs text-gray-700 whitespace-pre-wrap font-sans leading-relaxed select-text"
+                  onMouseUp={handleTextSelection}
+                >
                   {docContent}
                 </pre>
               )
             ) : (
               <div className="text-center text-gray-400 text-xs mt-8">
                 无法解析或不支持的文件格式
+              </div>
+            )}
+            
+            {selectionMenuPosition && (
+              <div
+                className="selection-menu fixed z-50 bg-white rounded-lg shadow-lg border border-gray-200 py-1 px-2 flex items-center gap-1"
+                style={{
+                  left: `${selectionMenuPosition.x}px`,
+                  top: `${selectionMenuPosition.y}px`,
+                  transform: "translateX(-50%) translateY(-100%)"
+                }}
+              >
+                <button
+                  onClick={addToChat}
+                  className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                >
+                  <Quote className="w-3.5 h-3.5" />
+                  添加到对话框中
+                </button>
               </div>
             )}
           </div>
@@ -881,7 +980,7 @@ export default function ChatPage() {
                 return (
                   <div key={i}>
                     {msg.role === "user" && (
-                      <ChatMessage role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} />
+                      <ChatMessage role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} onDocRefClick={handleDocRefClick} />
                     )}
                     {msg.role === "assistant" && (
                       <div className="space-y-3">
@@ -893,7 +992,7 @@ export default function ChatPage() {
                           </div>
                         )}
                         {/* Assistant response */}
-                        <ChatMessage role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} />
+                        <ChatMessage role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} onDocRefClick={handleDocRefClick} />
                       </div>
                     )}
                     {/* Live task steps after last user message when no assistant message yet */}
@@ -924,7 +1023,7 @@ export default function ChatPage() {
                       <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
                     </div>
                   )}
-                  <ChatMessage role="assistant" content={streamingContent} isStreaming />
+                  <ChatMessage role="assistant" content={streamingContent} isStreaming onDocRefClick={handleDocRefClick} />
                 </div>
               )}
 
@@ -960,7 +1059,7 @@ export default function ChatPage() {
               </div>
             )}
             
-            {/* 模式选择：分段控制器，两种模式始终可见、易于区分 */}
+            {/* 模式选择：分段控制器，三种模式始终可见、易于区分 */}
             <div className="flex flex-wrap items-center gap-3 mb-2.5">
               <div className="flex rounded-xl bg-slate-100 p-0.5 border border-slate-200/80 shadow-inner">
                 <button
@@ -987,21 +1086,35 @@ export default function ChatPage() {
                   <Bot className="w-4 h-4" />
                   智能体
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("paper_qa")}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                    mode === "paper_qa"
+                      ? "bg-emerald-500 text-white shadow-sm"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  <FileText className="w-4 h-4" />
+                  论文问答
+                </button>
               </div>
               <span className="text-xs text-slate-400">
-                {mode === "normal" ? "快速问答，单轮回复" : "多步规划、工具调用与任务执行"}
+                {mode === "normal" ? "快速问答，单轮回复" : mode === "agent" ? "多步规划、工具调用与任务执行" : "仅基于已有文档进行问答"}
               </span>
-              <button
-                onClick={() => setWebSearch(!webSearch)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                  webSearch
-                    ? "bg-emerald-500 text-white shadow-sm shadow-emerald-200"
-                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
-                }`}
-              >
-                <Globe className="w-3.5 h-3.5" />
-                联网搜索
-              </button>
+              {mode !== "paper_qa" && (
+                <button
+                  onClick={() => setWebSearch(!webSearch)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    webSearch
+                      ? "bg-emerald-500 text-white shadow-sm shadow-emerald-200"
+                      : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                  }`}
+                >
+                  <Globe className="w-3.5 h-3.5" />
+                  联网搜索
+                </button>
+              )}
             </div>
 
             {imagePreview && (
@@ -1052,6 +1165,8 @@ export default function ChatPage() {
               className={`flex items-end gap-2 rounded-xl p-2 transition-all shadow-sm ${
                 mode === "agent"
                   ? "bg-indigo-50/70 border-2 border-indigo-200/80 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100/60 focus-within:bg-indigo-50/90"
+                  : mode === "paper_qa"
+                  ? "bg-emerald-50/70 border-2 border-emerald-200/80 focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-100/60 focus-within:bg-emerald-50/90"
                   : "bg-slate-50/80 border border-slate-200 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100/60 focus-within:bg-white"
               }`}
             >
@@ -1102,7 +1217,7 @@ export default function ChatPage() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 rows={1}
-                placeholder={mode === "agent" ? "描述你的研究任务或拖拽论文..." : "输入你的问题或拖拽论文..."}
+                placeholder={mode === "agent" ? "描述你的研究任务或拖拽论文..." : mode === "paper_qa" ? "基于你保存的所有论文提问或拖拽论文..." : "输入你的问题或拖拽论文..."}
                 className="flex-1 resize-none bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400 max-h-32 py-2"
                 style={{ minHeight: "36px" }}
                 disabled={isLoading}

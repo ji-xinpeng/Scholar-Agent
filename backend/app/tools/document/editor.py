@@ -110,16 +110,16 @@ class DocEditTool(BaseTool):
 
             if action == "read":
                 text = document_service.get_document_content(doc_id)
-                return {"success": True, "action": "read", "content": text or "", "filename": doc.get("original_name", "")}
+                return {"success": True, "action": "read", "content": text or "", "filename": doc.get("original_name", ""), "doc_id": doc_id}
             elif action == "update":
                 ok = document_service.update_document_content(doc_id, content)
-                return {"success": ok, "action": "update", "message": "全文已更新" if ok else "更新失败"}
+                return {"success": ok, "action": "update", "message": "全文已更新" if ok else "更新失败", "doc_id": doc_id}
             elif action == "append":
                 ok = document_service.append_document_content(doc_id, content)
-                return {"success": ok, "action": "append", "message": "内容已追加" if ok else "追加失败"}
+                return {"success": ok, "action": "append", "message": "内容已追加" if ok else "追加失败", "doc_id": doc_id}
             elif action == "replace":
                 ok = document_service.replace_document_content(doc_id, old_text, new_text)
-                return {"success": ok, "action": "replace", "message": "内容已替换" if ok else "替换失败（可能原文不存在）"}
+                return {"success": ok, "action": "replace", "message": "内容已替换" if ok else "替换失败（可能原文不存在）", "doc_id": doc_id}
             else:
                 return {"success": False, "error": f"未知操作: {action}，支持 read/update/append/replace/create/delete"}
         except Exception as e:

@@ -11,8 +11,9 @@ class MultiModalRAGTool(BaseTool):
     description = "基于上传文档进行多模态问答"
     parameters = {
         "query": {"type": "string", "description": "用户问题", "required": True},
-        "document_ids": {"type": "array", "description": "指定文档ID列表", "default": []},
-        "top_k": {"type": "integer", "description": "返回最相关的 k 个片段", "default": 5}
+        "document_ids": {"type": "array", "description": "指定文档ID列表（为空则检索所有文档）", "default": []},
+        "top_k": {"type": "integer", "description": "返回最相关的 k 个片段", "default": 5},
+        "user_id": {"type": "string", "description": "用户ID", "default": ""}
     }
 
     async def run(self, **kwargs) -> Dict[str, Any]:
@@ -20,6 +21,7 @@ class MultiModalRAGTool(BaseTool):
         query = kwargs.get("query", "")
         document_ids = kwargs.get("document_ids", [])
         top_k = kwargs.get("top_k", 5)
+        user_id = kwargs.get("user_id", "")
         
         if not query:
             return {
@@ -31,23 +33,33 @@ class MultiModalRAGTool(BaseTool):
             document_contents = []
             sources = []
             
-            if document_ids and isinstance(document_ids, list):
+            docs_to_check = []
+            
+            if document_ids and isinstance(document_ids, list) and len(document_ids) > 0:
                 for doc_id in document_ids:
                     doc = document_service.get_document(doc_id)
                     if doc:
-                        content = document_service.get_document_content(doc_id)
-                        if content:
-                            document_contents.append({
-                                "doc_id": doc_id,
-                                "title": doc.get("original_name", "未知文档"),
-                                "content": content
-                            })
-                            sources.append(doc.get("original_name", "未知文档"))
+                        docs_to_check.append(doc)
+            elif user_id:
+                result = document_service.list_documents(user_id, page_size=100)
+                docs_to_check = result.get("documents", [])
+            
+            for doc in docs_to_check:
+                doc_id = doc.get("id")
+                if doc_id:
+                    content = document_service.get_document_content(doc_id)
+                    if content:
+                        document_contents.append({
+                            "doc_id": doc_id,
+                            "title": doc.get("original_name", "未知文档"),
+                            "content": content
+                        })
+                        sources.append(doc.get("original_name", "未知文档"))
             
             if not document_contents:
                 return {
                     "success": False,
-                    "error": "没有找到可用的文档内容",
+                    "error": "没有找到可用的文档内容，请先上传文档",
                     "query": query,
                     "document_ids": document_ids
                 }
@@ -70,7 +82,7 @@ class MultiModalRAGTool(BaseTool):
             return {
                 "success": True,
                 "query": query,
-                "document_ids": document_ids,
+                "document_ids": [d["doc_id"] for d in document_contents],
                 "top_k": top_k,
                 "answer": response.content,
                 "sources": sources,

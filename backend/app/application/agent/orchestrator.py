@@ -84,7 +84,9 @@ class AgentOrchestrator:
         user_query: str,
         selected_doc_ids: list = None,
         system_prompt: str = None,
-        enable_search: bool = True
+        enable_search: bool = True,
+        provider: str = None,
+        model: str = None
     ) -> AsyncGenerator[str, None]:
         """运行普通聊天模式 - 逐步简化以提升稳定性"""
         try:
@@ -101,7 +103,7 @@ class AgentOrchestrator:
             yield self._sse("thinking", {"message": "正在思考..."})
 
             full_response = ""
-            async for chunk in llm_service.chat_stream(messages):
+            async for chunk in llm_service.chat_stream(messages, provider=provider, model=model):
                 full_response += chunk
                 yield self._sse("stream", {"content": chunk})
 
@@ -120,7 +122,15 @@ class AgentOrchestrator:
         user_id: str,
         user_query: str,
         selected_doc_ids: list = None,
-        system_prompt: str = None
+        system_prompt: str = None,
+        llm_provider: str = None,
+        llm_model: str = None,
+        llm_temperature: float = None,
+        llm_max_tokens: int = None,
+        llm_top_p: float = None,
+        plan_provider: str = "deepseek",
+        plan_temperature: float = 0.1,
+        **llm_kwargs
     ) -> AsyncGenerator[str, None]:
         """学者模式 - 保留工具调用但增强稳定性"""
         try:
@@ -134,7 +144,7 @@ class AgentOrchestrator:
             base_messages = self._build_chat_messages(history, system_prompt)
 
             yield self._sse("thinking", {"message": "正在分析问题..."})
-            plan = await self._plan_tasks(user_query, base_messages, selected_doc_ids, user_id)
+            plan = await self._plan_tasks(user_query, base_messages, selected_doc_ids, user_id, provider=plan_provider, temperature=plan_temperature)
             tasks = plan.get("tasks", [])
 
             # 前端需要 plan 为 [{id, action}] 数组及 thought，至少保留一个步骤避免卡片消失
@@ -142,6 +152,8 @@ class AgentOrchestrator:
                 {"id": str(i), "action": self._task_action_label(task), "tool_name": task.get("tool"), "params": task.get("params", {})}
                 for i, task in enumerate(tasks)
             ]
+            # 总是添加生成回答步骤作为最后一步
+            plan_steps.append({"id": str(len(plan_steps)), "action": "生成回答"})
             if not plan_steps:
                 plan_steps = [{"id": "0", "action": "生成回答"}]
             yield self._sse("plan", {"plan": plan_steps, "thought": "已制定执行计划。"})
@@ -171,24 +183,44 @@ class AgentOrchestrator:
                     doc_id = tool_result.get("doc_id")
                     if action in ("create", "update", "append", "replace", "delete"):
                         yield self._sse("doc_updated", {"doc_id": doc_id, "action": action})
+                # 如果是论文下载工具，通知前端刷新文档列表
+                if tool_name == "PaperDownloadTool" and isinstance(tool_result, dict) and tool_result.get("success"):
+                    downloaded_docs = tool_result.get("downloaded_docs", [])
+                    for doc in downloaded_docs:
+                        doc_id = doc.get("doc_id")
+                        if doc_id:
+                            action = "create" if not doc.get("cached") else "cached"
+                            yield self._sse("doc_updated", {"doc_id": doc_id, "action": action})
 
-            # 无工具任务时，标记「生成回答」步骤开始
+            # 标记「生成回答」步骤开始
             agent_thought = "已制定执行计划。"
-            if not tasks:
-                yield self._sse("step_start", {"step_id": "0", "action": "生成回答"})
+            generate_step_id = str(len(tasks))
+            yield self._sse("step_start", {"step_id": generate_step_id, "action": "生成回答"})
             yield self._sse("thinking", {"message": "正在生成回答..."})
             messages_with_results = base_messages + [
                 ChatMessage(role=MessageRole.USER, content=f"Context: {json.dumps(results, ensure_ascii=False)}")
             ]
 
             full_response = ""
-            async for chunk in llm_service.chat_stream(messages_with_results):
+            chat_kwargs = {}
+            if llm_provider is not None:
+                chat_kwargs["provider"] = llm_provider
+            if llm_model is not None:
+                chat_kwargs["model"] = llm_model
+            if llm_temperature is not None:
+                chat_kwargs["temperature"] = llm_temperature
+            if llm_max_tokens is not None:
+                chat_kwargs["max_tokens"] = llm_max_tokens
+            if llm_top_p is not None:
+                chat_kwargs["top_p"] = llm_top_p
+            chat_kwargs.update(llm_kwargs)
+            
+            async for chunk in llm_service.chat_stream(messages_with_results, **chat_kwargs):
                 full_response += chunk
                 yield self._sse("stream", {"content": chunk})
 
-            # 无工具任务时，标记「生成回答」步骤完成
-            if not tasks:
-                yield self._sse("step_complete", {"step_id": "0", "result": {}, "thought_summary": "回答已生成。"})
+            # 标记「生成回答」步骤完成
+            yield self._sse("step_complete", {"step_id": generate_step_id, "result": {}, "thought_summary": "回答已生成。"})
             
             # 保存任务计划、思考过程等到消息 metadata
             msg_metadata = {
@@ -206,8 +238,87 @@ class AgentOrchestrator:
             yield self._sse("error", {"message": str(e)})
             yield self._sse("done", {})
 
+    async def run_paper_qa_chat(
+        self,
+        session_id: str,
+        user_id: str,
+        user_query: str,
+        selected_doc_ids: list = None,
+        system_prompt: str = None,
+        llm_provider: str = None,
+        llm_model: str = None,
+        llm_temperature: float = None,
+        llm_max_tokens: int = None,
+        llm_top_p: float = None,
+        **llm_kwargs
+    ) -> AsyncGenerator[str, None]:
+        """论文问答模式 - 仅基于已有文档进行问答"""
+        try:
+            selected_doc_ids = selected_doc_ids or []
 
-    async def _plan_tasks(self, query: str, messages: list, selected_doc_ids: list = None, user_id: str = None) -> dict:
+            metadata = {"document_ids": selected_doc_ids} if selected_doc_ids else None
+            user_msg = session_service.add_message(session_id, "user", user_query, "text", metadata=metadata)
+            yield self._sse("user_message", user_msg)
+
+            yield self._sse("thinking", {"message": "正在检索相关文档..."})
+
+            rag_result = await toolhub.run_tool(
+                "MultiModalRAGTool",
+                query=user_query,
+                document_ids=selected_doc_ids,
+                user_id=user_id
+            )
+
+            if not rag_result or not rag_result.get("success"):
+                error_msg = rag_result.get("error", "文档检索失败") if rag_result else "文档检索失败"
+                yield self._sse("error", {"message": error_msg})
+                yield self._sse("done", {})
+                return
+
+            answer = rag_result.get("answer", "")
+            sources = rag_result.get("sources", [])
+            documents_used = rag_result.get("documents_used", 0)
+
+            full_response = answer
+            if sources:
+                full_response += f"\n\n---\n\n**参考文档 ({documents_used} 篇):**\n"
+                for i, source in enumerate(sources, 1):
+                    full_response += f"{i}. {source}\n"
+
+            history = session_service.get_messages(session_id)
+            base_messages = self._build_chat_messages(history, system_prompt)
+
+            yield self._sse("thinking", {"message": "正在生成回答..."})
+
+            chat_kwargs = {}
+            if llm_provider is not None:
+                chat_kwargs["provider"] = llm_provider
+            if llm_model is not None:
+                chat_kwargs["model"] = llm_model
+            if llm_temperature is not None:
+                chat_kwargs["temperature"] = llm_temperature
+            if llm_max_tokens is not None:
+                chat_kwargs["max_tokens"] = llm_max_tokens
+            if llm_top_p is not None:
+                chat_kwargs["top_p"] = llm_top_p
+            chat_kwargs.update(llm_kwargs)
+
+            for chunk in full_response:
+                yield self._sse("stream", {"content": chunk})
+
+            yield self._sse("stream", {"content": ""})
+
+            assistant_msg = session_service.add_message(session_id, "assistant", full_response, "text")
+            yield self._sse("assistant_message", assistant_msg)
+            yield self._sse("done", {})
+
+        except Exception as e:
+            logger.error(f"论文问答模式错误: {e}", exc_info=True)
+            yield self._sse("error", {"message": str(e)})
+            yield self._sse("done", {})
+
+
+    async def _plan_tasks(self, query: str, messages: list, selected_doc_ids: list = None, user_id: str = None, provider: str = "deepseek", temperature: float = 0.1) -> dict:
         """任务规划：从已支持的工具中由 LLM 选择合适的工具及参数"""
         selected_doc_ids = selected_doc_ids or []
         available_tools = toolhub.list_tools()
@@ -254,7 +365,8 @@ class AgentOrchestrator:
         tasks = []
         raw_tasks = []
         try:
-            response = await llm_service.chat(plan_messages)
+            # 任务规划使用指定的 provider 和 model，如果没有指定则使用 deepseek 作为默认
+            response = await llm_service.chat(plan_messages, provider=provider, temperature=temperature)
             text = (response.content or "").strip()
             
             parsed = self._extract_json(text)
