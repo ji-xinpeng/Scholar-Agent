@@ -1,10 +1,11 @@
 """
 工具中心 (ToolHub)
-注册和管理所有可用工具，纯 Python 实现，不依赖 LangChain。
+注册和管理所有可用工具
 """
 from typing import Dict, Any, Optional, List
 from app.tools.base import BaseTool
 from app.tools.search.web_search import SearchTool
+from app.tools.search.paper_download import PaperDownloadTool
 from app.tools.document.multimodal_parser import MultiModalRAGTool
 from app.tools.content.summarizer import SummarizeTool
 from app.tools.search.filter import FilterTool
@@ -22,7 +23,7 @@ class ToolHub:
 
     def _register_defaults(self):
         """注册默认工具"""
-        for tool_cls in [SearchTool, MultiModalRAGTool, SummarizeTool, FilterTool, CitationTool, DocEditTool, ProfileTool]:
+        for tool_cls in [SearchTool, PaperDownloadTool, MultiModalRAGTool, SummarizeTool, FilterTool, CitationTool, DocEditTool, ProfileTool]:
             tool = tool_cls()
             self._tools[tool.name] = tool
 
