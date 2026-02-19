@@ -2,10 +2,10 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { 
-  Send, Globe, Zap, ImagePlus, Sparkles, AlertCircle,
+  Send, Globe, ImagePlus, Sparkles, AlertCircle,
   Upload, FolderPlus, Trash2, FileText, File, FolderOpen,
   ChevronLeft, ChevronRight, Search, Folder, Paperclip,
-  X, Save
+  X, Save, MessageCircle, Bot
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ChatMessage from "@/components/ChatMessage";
@@ -960,18 +960,37 @@ export default function ChatPage() {
               </div>
             )}
             
-            <div className="flex items-center gap-1.5 mb-2.5">
-              <button
-                onClick={() => setMode(mode === "normal" ? "agent" : "normal")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                  mode === "agent"
-                    ? "bg-indigo-500 text-white shadow-sm shadow-indigo-200"
-                    : "bg-slate-100 text-slate-500 hover:bg-slate-200"
-                }`}
-              >
-                <Zap className="w-3.5 h-3.5" />
-                {mode === "agent" ? "智能体模式" : "普通模式"}
-              </button>
+            {/* 模式选择：分段控制器，两种模式始终可见、易于区分 */}
+            <div className="flex flex-wrap items-center gap-3 mb-2.5">
+              <div className="flex rounded-xl bg-slate-100 p-0.5 border border-slate-200/80 shadow-inner">
+                <button
+                  type="button"
+                  onClick={() => setMode("normal")}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                    mode === "normal"
+                      ? "bg-white text-slate-800 shadow-sm border border-slate-200/80"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  普通对话
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("agent")}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                    mode === "agent"
+                      ? "bg-indigo-500 text-white shadow-sm"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  <Bot className="w-4 h-4" />
+                  智能体
+                </button>
+              </div>
+              <span className="text-xs text-slate-400">
+                {mode === "normal" ? "快速问答，单轮回复" : "多步规划、工具调用与任务执行"}
+              </span>
               <button
                 onClick={() => setWebSearch(!webSearch)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
@@ -1029,7 +1048,13 @@ export default function ChatPage() {
               </div>
             )}
 
-            <div className="flex items-end gap-2 bg-slate-50/80 border border-slate-200 rounded-xl p-2 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100/60 focus-within:bg-white transition-all shadow-sm">
+            <div
+              className={`flex items-end gap-2 rounded-xl p-2 transition-all shadow-sm ${
+                mode === "agent"
+                  ? "bg-indigo-50/70 border-2 border-indigo-200/80 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100/60 focus-within:bg-indigo-50/90"
+                  : "bg-slate-50/80 border border-slate-200 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100/60 focus-within:bg-white"
+              }`}
+            >
               <input
                 ref={imageInputRef}
                 type="file"
