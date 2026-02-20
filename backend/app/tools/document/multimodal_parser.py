@@ -1,8 +1,7 @@
 from typing import Dict, Any, List
 from app.tools.base import BaseTool
 from app.application.services.document_service import document_service
-from app.infrastructure.llm.base import MessageRole, ChatMessage
-from app.infrastructure.llm.service import llm_service
+from app.infrastructure.llm.service import MessageRole, ChatMessage, llm_service
 from app.infrastructure.logging.config import logger
 
 

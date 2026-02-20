@@ -86,11 +86,12 @@ class SearchManager:
 
 class SearchTool(BaseTool):
     name = "SearchTool"
-    description = "检索学术论文数据库，返回论文列表。结果可被后续的 FilterTool 或 CitationTool 直接使用。"
+    description = "检索学术论文数据库，返回论文列表。支持根据用户研究领域和知识水平进行个性化搜索。结果可被后续的 FilterTool 或 CitationTool 直接使用。"
     parameters = {
         "query": {"type": "string", "description": "研究主题关键词", "required": True},
         "max_results": {"type": "integer", "description": "最大返回论文数", "default": 10},
-        "year_range": {"type": "string", "description": "年份范围，如 2020-2025", "default": ""}
+        "year_range": {"type": "string", "description": "年份范围，如 2020-2025", "default": ""},
+        "user_id": {"type": "string", "description": "用户ID，用于个性化搜索", "default": ""}
     }
 
     async def run(self, **kwargs) -> Dict[str, Any]:
@@ -98,28 +99,52 @@ class SearchTool(BaseTool):
         query = kwargs.get("query", kwargs.get("query") or "")
         max_results = kwargs.get("max_results", 10)
         year_range = kwargs.get("year_range", "")
-
+        user_id = kwargs.get("user_id", "")
+        
+        # 获取用户资料用于个性化搜索
+        user_profile = None
+        if user_id:
+            try:
+                from app.application.services.user_service import user_service
+                user_profile = user_service.get_profile(user_id)
+                logger.info(f"SearchTool 获取到用户资料: user_id={user_id}, research_field={user_profile.get('research_field')}")
+            except Exception as e:
+                logger.warning(f"SearchTool 获取用户资料失败: {e}")
+        
+        # 构建增强的查询
+        enhanced_query = query
+        if user_profile and user_profile.get("research_field"):
+            # 如果用户有研究领域，将其添加到搜索词中
+            research_field = user_profile["research_field"]
+            if research_field not in query:
+                enhanced_query = f"{query} {research_field}"
+                logger.info(f"SearchTool 使用增强查询: {enhanced_query}")
+        
         # 尝试从缓存获取
-        cache_key = f"search:{query}:{max_results}:{year_range}"
+        cache_key = f"search:{enhanced_query}:{max_results}:{year_range}:{user_id}"
         cached_result = cache_manager.get(cache_key)
         if cached_result is not None:
-            logger.info(f"SearchTool 缓存命中: {query}")
+            logger.info(f"SearchTool 缓存命中: {enhanced_query}")
             return cached_result
 
         search_manager = SearchManager()
-        search_results = await search_manager.search([query], max_results)
-        if not search_results.organic:
-            result = {
-                "success": False,
-                "message": "搜索功能暂不可用，请直接使用文档检索"
-            }
-        else:
+        search_results = await search_manager.search([enhanced_query], max_results)
+        papers = []
+        if search_results.organic:
             papers = [paper.model_dump() for paper in search_results.organic[0].data]
-            result = {
-                "success": True,
-                "papers": papers
-            }
+        
+        result = {
+            "success": True,
+            "papers": papers,
+            "original_query": query,
+            "enhanced_query": enhanced_query,
+            "user_profile_used": user_profile is not None
+        }
 
         # 缓存结果（缓存 24 小时）
         cache_manager.set(cache_key, result, ttl=86400)
         return result
+    
+    def resolve_params(self, params: Dict[str, Any], previous_results: Dict[str, Any]) -> Dict[str, Any]:
+        """自动解析参数"""
+        return params

@@ -5,8 +5,7 @@ const BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:80
 export async function fetchSSEChat(
   message: string,
   sessionId: string | null,
-  mode: string,
-  webSearch: boolean,
+  deepResearch: boolean,
   onEvent: (event: { type: string; data: any }) => void,
   onDone: () => void,
   documentIds?: string[],
@@ -16,8 +15,7 @@ export async function fetchSSEChat(
     message,
     session_id: sessionId,
     user_id: "default",
-    mode,
-    web_search: webSearch,
+    deep_research: deepResearch,
   };
   if (documentIds && documentIds.length > 0) {
     body.document_ids = documentIds;

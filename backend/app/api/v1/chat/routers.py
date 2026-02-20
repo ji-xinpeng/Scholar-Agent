@@ -2,10 +2,10 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from app.schemas import ChatRequest, SessionCreate
 from app.application.services.agent_service import AgentService
-from app.application.services.document_service import document_service
+from app.application.agent.orchestrator import agent_orchestrator
+from app.core.config import settings
 from app.infrastructure.logging.config import logger
 import json
-from datetime import datetime, timezone
 
 router = APIRouter()
 agent_service = AgentService()
@@ -13,33 +13,19 @@ agent_service = AgentService()
 
 @router.post("/chat")
 async def chat(request: ChatRequest):
-    """主聊天接口 - 返回SSE流"""
-    logger.info(f"收到聊天请求 - 用户: {request.user_id}, 模式: {request.mode}, 会话: {request.session_id or '新会话'}")
+    """主聊天接口 - 智能统一入口，自动识别意图并路由，根据意图选择模型"""
+    logger.info(f"收到聊天请求 - 用户: {request.user_id}, 深度研究: {request.deep_research}, 会话: {request.session_id or '新会话'}")
     logger.debug(f"消息: {request.message[:100]}...")
 
-    document_context = ""
-    if request.document_ids:
-        for doc_id in request.document_ids:
-            doc = document_service.get_document(doc_id)
-            if doc:
-                content = document_service.get_document_content(doc_id)
-                if content:
-                    document_context += f"\n\n=== 文档: {doc['original_name']} ===\n{content}"
-                    logger.info(f"已加载文档: {doc['original_name']}, 长度: {len(content)}")
-
-    enhanced_message = request.message
-    if document_context:
-        enhanced_message = f"{request.message}\n\n【相关文档内容】{document_context}"
-
     if not request.session_id:
-        session = agent_service.session_service.create_session(request.user_id, mode=request.mode)
+        session = agent_service.session_service.create_session(request.user_id, mode="agent")
         session_id = session["id"]
         logger.info(f"创建新会话: {session_id}")
     else:
         session_id = request.session_id
         existing = agent_service.session_service.get_session(session_id)
         if not existing:
-            session = agent_service.session_service.create_session(request.user_id, mode=request.mode)
+            session = agent_service.session_service.create_session(request.user_id, mode="agent")
             session_id = session["id"]
             logger.warning(f"会话 {request.session_id} 不存在，创建新会话: {session_id}")
         else:
@@ -50,35 +36,28 @@ async def chat(request: ChatRequest):
 
     async def wrapped_generator():
         try:
-            if request.mode == "agent":
-                logger.info("启动Agent模式聊天")
-                async for chunk in agent_service.run_agent_chat(
-                    enhanced_message, session_id, history,
-                    web_search=request.web_search,
-                    document_ids=request.document_ids,
-                    provider=request.provider,
-                    model=request.model
-                ):
-                    yield chunk
-            elif request.mode == "paper_qa":
-                logger.info("启动论文问答模式聊天")
-                async for chunk in agent_service.run_paper_qa_chat(
-                    request.message, session_id, history,
-                    document_ids=request.document_ids,
-                    provider=request.provider,
-                    model=request.model
+            if request.deep_research:
+                logger.info("深度研究模式：直接使用智能体，使用配置的智能体模型")
+                model = request.model or settings.AGENT_MODEL
+                async for chunk in agent_orchestrator.run_agent_chat(
+                    session_id,
+                    request.user_id,
+                    request.message,
+                    selected_doc_ids=request.document_ids,
+                    llm_model=model
                 ):
                     yield chunk
             else:
-                logger.info("启动普通模式聊天")
-                async for chunk in agent_service.run_normal_chat(
-                    enhanced_message, session_id, history, 
-                    web_search=request.web_search, 
-                    document_ids=request.document_ids,
-                    provider=request.provider,
-                    model=request.model
+                logger.info("智能模式：由 orchestrator 统一处理，自动选择模型")
+                async for chunk in agent_orchestrator.run_unified_chat(
+                    session_id,
+                    request.user_id,
+                    request.message,
+                    selected_doc_ids=request.document_ids,
+                    llm_model=request.model
                 ):
                     yield chunk
+            
             logger.info("聊天生成成功完成")
         except Exception as e:
             logger.error(f"聊天生成失败: {e}", exc_info=True)
@@ -87,7 +66,7 @@ async def chat(request: ChatRequest):
     return StreamingResponse(wrapped_generator(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",  # 禁止代理缓冲，确保 SSE 事件及时推送到前端
+        "X-Accel-Buffering": "no",
         "X-Session-Id": session_id,
     })
 

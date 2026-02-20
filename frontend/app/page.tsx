@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ChatMessage from "@/components/ChatMessage";
-import TaskProgress, { TaskStep } from "@/components/TaskProgress";
+import TaskProgress, { TaskStep, AgentTimelineEvent } from "@/components/TaskProgress";
 import { 
   fetchSSEChat, getMessages, 
   uploadDocument, getDocuments, deleteDocument,
@@ -28,6 +28,7 @@ interface Msg {
     task_plan?: TaskStep[];
     agent_thought?: string;
     step_thoughts?: Record<string, string>;
+    timeline?: AgentTimelineEvent[];
   };
 }
 
@@ -44,12 +45,12 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [mode, setMode] = useState<"normal" | "agent" | "paper_qa">("normal");
-  const [webSearch, setWebSearch] = useState(false);
+  const [deepResearch, setDeepResearch] = useState(false);
   const [taskSteps, setTaskSteps] = useState<TaskStep[]>([]);
   const [agentThought, setAgentThought] = useState<string>("");
   const [stepThoughts, setStepThoughts] = useState<Record<string, string>>({});
   const [showTaskSteps, setShowTaskSteps] = useState(false);
+  const [agentTimeline, setAgentTimeline] = useState<AgentTimelineEvent[]>([]);
   const [streamingContent, setStreamingContent] = useState("");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -86,8 +87,8 @@ export default function ChatPage() {
   const [selectionMenuPosition, setSelectionMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const docContentRef = useRef<HTMLDivElement>(null);
 
-  const taskStateRef = useRef({ taskSteps, agentThought, stepThoughts, showTaskSteps });
-  taskStateRef.current = { taskSteps, agentThought, stepThoughts, showTaskSteps };
+  const taskStateRef = useRef({ taskSteps, agentThought, stepThoughts, showTaskSteps, agentTimeline });
+  taskStateRef.current = { taskSteps, agentThought, stepThoughts, showTaskSteps, agentTimeline };
 
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -226,6 +227,7 @@ export default function ChatPage() {
     setStepThoughts({});
     setShowTaskSteps(false);
     setStreamingContent("");
+    setAgentTimeline([]);
     try {
       const data = await getMessages(id);
       const loadedMessages = (data.messages || []).map((m: any) => ({
@@ -236,17 +238,18 @@ export default function ChatPage() {
           task_plan: m.metadata.task_plan,
           agent_thought: m.metadata.agent_thought,
           step_thoughts: m.metadata.step_thoughts,
+          timeline: m.metadata.timeline,
         } : undefined,
       }));
       setMessages(loadedMessages);
       
-      // 从最后一条 assistant 消息中恢复任务显示状态
-      const lastAssistantMsg = [...loadedMessages].reverse().find((m) => m.role === "assistant" && m.metadata);
+      const lastAssistantMsg = [...loadedMessages].reverse().find((m: Msg) => m.role === "assistant" && m.metadata);
       if (lastAssistantMsg?.metadata) {
         if (lastAssistantMsg.metadata.task_plan?.length > 0) {
           setTaskSteps(lastAssistantMsg.metadata.task_plan);
           setAgentThought(lastAssistantMsg.metadata.agent_thought || "");
           setStepThoughts(lastAssistantMsg.metadata.step_thoughts || {});
+          setAgentTimeline(lastAssistantMsg.metadata.timeline || []);
           setShowTaskSteps(true);
         }
       }
@@ -265,6 +268,8 @@ export default function ChatPage() {
     setStreamingContent("");
     setAttachments([]);
     setSelectedDocumentIds([]);
+    setAgentTimeline([]);
+    setDeepResearch(false);
     inputRef.current?.focus();
   };
 
@@ -445,17 +450,11 @@ export default function ChatPage() {
     setCostError(null);
     setLastCost(null);
 
-    if (mode === "agent") {
-      setTaskSteps([{ id: "analyze", action: "分析用户查询，制定执行计划...", status: "running" }]);
-      setAgentThought("正在理解您的需求...");
-      setStepThoughts({});
-      setShowTaskSteps(true);
-    } else {
-      setTaskSteps([]);
-      setAgentThought("");
-      setStepThoughts({});
-      setShowTaskSteps(false);
-    }
+    setTaskSteps([]);
+    setAgentThought("");
+    setStepThoughts({});
+    setAgentTimeline([]);
+    setShowTaskSteps(true);
 
     const controller = new AbortController();
     setAbortController(controller);
@@ -465,27 +464,43 @@ export default function ChatPage() {
       const returnedId = await fetchSSEChat(
         text,
         sessionId,
-        mode,
-        webSearch,
+        deepResearch,
         (event) => {
           const { type, data } = event;
 
           switch (type) {
             case "thinking":
-              if (data.message) setAgentThought(data.message);
+              if (data.message) {
+                setAgentThought(data.message);
+              }
               break;
+
             case "plan":
-              setTaskSteps(
-                (data.plan || []).map((s: any) => ({
-                  id: s.id,
-                  action: s.action,
-                  status: "pending" as const,
-                  tool_name: s.tool_name,
-                  params: s.params,
-                }))
-              );
-              setAgentThought(data.thought || "");
-              setStepThoughts({});
+              setTaskSteps((prev) => {
+                const prevMap = new Map(prev.map((s) => [s.id, s]));
+                return (data.plan || []).map((s: any) => {
+                  const existing = prevMap.get(s.id);
+                  const backendStatus = s.status === "done" ? "done" as const : s.status === "running" ? "running" as const : "pending" as const;
+                  if (existing) {
+                    const finalStatus = existing.status === "done" ? "done" as const : backendStatus !== "pending" ? backendStatus : existing.status;
+                    return {
+                      ...existing,
+                      action: s.action || existing.action,
+                      tool_name: s.tool_name || existing.tool_name,
+                      params: s.params || existing.params,
+                      status: finalStatus,
+                    };
+                  }
+                  return {
+                    id: s.id,
+                    action: s.action,
+                    status: backendStatus,
+                    tool_name: s.tool_name,
+                    params: s.params,
+                  };
+                });
+              });
+              if (data.thought) setAgentThought(data.thought);
               setShowTaskSteps(true);
               break;
 
@@ -495,6 +510,7 @@ export default function ChatPage() {
                   s.id === data.step_id ? { ...s, status: "running" as const, message: "", tool_name: data.tool_name, params: data.params } : s
                 )
               );
+              setAgentTimeline((prev) => [...prev, { type: "step_start", stepId: data.step_id, toolName: data.tool_name, action: data.action || "" }]);
               break;
 
             case "step_progress":
@@ -523,6 +539,7 @@ export default function ChatPage() {
               if (data.step_id && data.thought_summary) {
                 setStepThoughts((prev) => ({ ...prev, [data.step_id]: data.thought_summary }));
               }
+              setAgentTimeline((prev) => [...prev, { type: "step_done", stepId: data.step_id, result: data.thought_summary || "" }]);
               break;
 
             case "stream":
@@ -552,7 +569,7 @@ export default function ChatPage() {
         },
         () => {
           if (accumulated) {
-            const { taskSteps: ts, agentThought: at, stepThoughts: st, showTaskSteps: ssts } = taskStateRef.current;
+            const { taskSteps: ts, agentThought: at, stepThoughts: st, showTaskSteps: ssts, agentTimeline: tl } = taskStateRef.current;
             const taskMeta = ssts && ts.length > 0 ? {
               task_plan: ts.map((s) => ({ 
                 id: s.id, 
@@ -565,6 +582,7 @@ export default function ChatPage() {
               })),
               agent_thought: at,
               step_thoughts: st,
+              timeline: tl,
             } : undefined;
             setMessages((prev) => [...prev, {
               role: "assistant",
@@ -579,7 +597,7 @@ export default function ChatPage() {
         },
         (() => {
           const ids = new Set(selectedDocumentIds);
-          if (mode === "agent" && selectedDoc?.id && !ids.has(selectedDoc.id)) {
+          if (selectedDoc?.id && !ids.has(selectedDoc.id)) {
             ids.add(selectedDoc.id);
           }
           return ids.size > 0 ? Array.from(ids) : undefined;
@@ -594,9 +612,8 @@ export default function ChatPage() {
       setIsLoading(false);
       setAbortController(null);
       if (err?.name === "AbortError") {
-        // 被用户中断，正常处理
         if (accumulated) {
-          const { taskSteps: ts, agentThought: at, stepThoughts: st, showTaskSteps: ssts } = taskStateRef.current;
+          const { taskSteps: ts, agentThought: at, stepThoughts: st, showTaskSteps: ssts, agentTimeline: tl } = taskStateRef.current;
           const taskMeta = ssts && ts.length > 0 ? {
             task_plan: ts.map((s) => ({ 
               id: s.id, 
@@ -609,6 +626,7 @@ export default function ChatPage() {
             })),
             agent_thought: at,
             step_thoughts: st,
+            timeline: tl,
           } : undefined;
           setMessages((prev) => [...prev, {
             role: "assistant",
@@ -935,17 +953,17 @@ export default function ChatPage() {
         onDragLeave={handleDragLeave}
         onDrop={handleChatDrop}
       >
-        <div className={`flex-1 overflow-y-auto transition-colors ${isDragOver ? "bg-indigo-50" : ""}`}>
+        <div className={`flex-1 overflow-y-auto transition-colors chat-area-bg ${isDragOver ? "bg-violet-50/80" : ""}`}>
           {messages.length === 0 && !isLoading ? (
-            <div className="flex flex-col items-center justify-center h-full text-center px-4">
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 via-violet-500 to-purple-600 flex items-center justify-center mb-5 shadow-lg shadow-indigo-200/50">
-                <Sparkles className="w-7 h-7 text-white" />
+            <div className="flex flex-col items-center justify-center h-full text-center px-6 min-h-[420px]">
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 via-fuchsia-500 to-indigo-600 flex items-center justify-center mb-6 shadow-xl shadow-violet-200/50 ring-4 ring-violet-100/50">
+                <Sparkles className="w-8 h-8 text-white" strokeWidth={2} />
               </div>
-              <h2 className="text-xl font-bold text-slate-800 mb-1.5">Scholar Agent</h2>
-              <p className="text-slate-500 text-sm max-w-md mb-6 leading-relaxed">
-                AI驱动的智能学术研究助手。提问、搜索论文，或从左侧拖拽论文分析。
+              <h2 className="text-2xl font-bold text-slate-800 mb-2 tracking-tight">Scholar Agent</h2>
+              <p className="text-slate-500 text-sm max-w-sm mb-8 leading-relaxed">
+                AI 驱动的智能学术研究助手。提问、搜索论文，或从左侧拖拽论文进行分析。
               </p>
-              <div className="grid grid-cols-2 gap-2.5 max-w-lg">
+              <div className="grid grid-cols-2 gap-3 max-w-xl">
                 {[
                   "大语言模型推理能力的最新进展有哪些？",
                   "解释一下 Transformer 架构",
@@ -955,7 +973,7 @@ export default function ChatPage() {
                   <button
                     key={q}
                     onClick={() => { setInput(q); inputRef.current?.focus(); }}
-                    className="text-left text-[13px] p-3.5 rounded-xl border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50 hover:shadow-sm transition-all text-slate-600 leading-relaxed"
+                    className="text-left text-[13px] p-4 rounded-2xl border border-slate-200/80 bg-white/70 hover:border-violet-300 hover:bg-white hover:shadow-md hover:shadow-violet-100/50 transition-all text-slate-600 leading-relaxed"
                   >
                     {q}
                   </button>
@@ -963,79 +981,64 @@ export default function ChatPage() {
               </div>
             </div>
           ) : (
-            <div className="max-w-3xl mx-auto px-6 py-5 space-y-4">
+            <div className="max-w-3xl mx-auto px-6 py-6 space-y-5">
               {messages.map((msg, i) => {
-                const isLastMessage = i === messages.length - 1;
-                const isLastAssistantMessage = isLastMessage && msg.role === "assistant";
+                const isLast = i === messages.length - 1;
                 const isStreamingActive = !!streamingContent;
-                const useLiveState = isLastAssistantMessage && !isStreamingActive && showTaskSteps && taskSteps.length > 0;
-                const hasTaskFromMsg = msg.role === "assistant" && (msg.metadata?.task_plan?.length ?? 0) > 0;
-                const showTaskBeforeAssistant = msg.role === "assistant" && (useLiveState || hasTaskFromMsg);
-                const taskProps = useLiveState
-                  ? { steps: taskSteps, agentThought, stepThoughts }
-                  : hasTaskFromMsg && msg.metadata
-                    ? { steps: msg.metadata.task_plan || [], agentThought: msg.metadata.agent_thought || "", stepThoughts: msg.metadata.step_thoughts || {} }
-                    : null;
+
+                const getTraceProps = () => {
+                  const meta = msg.metadata;
+                  if (msg.role === "assistant" && meta && ((meta.timeline?.length ?? 0) > 0 || (meta.task_plan?.length ?? 0) > 0)) {
+                    return { steps: meta.task_plan || [], stepThoughts: meta.step_thoughts || {}, timeline: meta.timeline || [] };
+                  }
+                  return null;
+                };
+                const traceProps = getTraceProps();
 
                 return (
                   <div key={i}>
                     {msg.role === "user" && (
-                      <ChatMessage role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} onDocRefClick={handleDocRefClick} />
+                      <ChatMessage role="user" content={msg.content} image={msg.image} attachments={msg.attachments} onDocRefClick={handleDocRefClick} />
                     )}
                     {msg.role === "assistant" && (
                       <div className="space-y-3">
-                        {/* Agent execution trace */}
-                        {showTaskBeforeAssistant && taskProps && (
-                          <div className="flex gap-3">
-                            <div className="w-8 shrink-0" />
-                            <TaskProgress {...taskProps} />
+                        {traceProps && (
+                          <div className="ml-12">
+                            <TaskProgress {...traceProps} />
                           </div>
                         )}
-                        {/* Assistant response */}
-                        <ChatMessage role={msg.role} content={msg.content} image={msg.image} attachments={msg.attachments} onDocRefClick={handleDocRefClick} />
-                      </div>
-                    )}
-                    {/* Live task steps after last user message when no assistant message yet */}
-                    {!isStreamingActive && !isLastAssistantMessage && isLastMessage && showTaskSteps && taskSteps.length > 0 && (
-                      <div className="flex gap-3 mt-3">
-                        <div className="w-8 shrink-0" />
-                        <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
+                        <ChatMessage role="assistant" content={msg.content} image={msg.image} attachments={msg.attachments} onDocRefClick={handleDocRefClick} />
                       </div>
                     )}
                   </div>
                 );
               })}
 
-              {/* Live task steps when no messages yet */}
-              {!messages.length && !streamingContent && showTaskSteps && taskSteps.length > 0 && (
-                <div className="flex gap-3">
-                  <div className="w-8 shrink-0" />
-                  <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
-                </div>
-              )}
-
-              {/* Streaming: show live task + streaming content */}
               {streamingContent && (
                 <div className="space-y-3">
-                  {showTaskSteps && taskSteps.length > 0 && (
-                    <div className="flex gap-3">
-                      <div className="w-8 shrink-0" />
-                      <TaskProgress steps={taskSteps} agentThought={agentThought} stepThoughts={stepThoughts} />
+                  {showTaskSteps && (agentTimeline.length > 0 || taskSteps.length > 0) && (
+                    <div className="ml-12">
+                      <TaskProgress steps={taskSteps} stepThoughts={stepThoughts} timeline={agentTimeline} />
                     </div>
                   )}
                   <ChatMessage role="assistant" content={streamingContent} isStreaming onDocRefClick={handleDocRefClick} />
                 </div>
               )}
 
-              {/* Loading placeholder */}
-              {isLoading && !streamingContent && taskSteps.length === 0 && (
+              {isLoading && !streamingContent && agentTimeline.length > 0 && (
+                <div className="ml-12">
+                  <TaskProgress steps={taskSteps} stepThoughts={stepThoughts} timeline={agentTimeline} />
+                </div>
+              )}
+
+              {isLoading && !streamingContent && agentTimeline.length === 0 && (
                 <ChatMessage role="assistant" content="" isStreaming />
               )}
 
               {/* Cost display */}
               {lastCost && (
-                <div className="flex justify-center pt-1">
-                  <span className="text-[11px] text-slate-400 bg-slate-50 border border-slate-100 px-3 py-1 rounded-full">
+                <div className="flex justify-center pt-2">
+                  <span className="text-xs text-slate-500 bg-white/90 border border-slate-200/80 px-4 py-2 rounded-full shadow-sm font-medium">
                     {lastCost.cost > 0
                       ? `本次消耗 ¥${lastCost.cost.toFixed(2)} · 余额 ¥${lastCost.balance.toFixed(2)}`
                       : `免费额度 · 余额 ¥${lastCost.balance.toFixed(2)}`}
@@ -1048,81 +1051,74 @@ export default function ChatPage() {
           )}
         </div>
 
-        <div className="border-t border-slate-200/80 bg-white p-4">
+        <div className="border-t border-slate-200/60 bg-white/95 backdrop-blur-sm px-4 py-4 shadow-[0_-4px_24px_-8px_rgba(0,0,0,0.06)]">
           <div className="max-w-3xl mx-auto">
             {costError && (
-              <div className="mb-3 flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+              <div className="mb-3 flex items-center gap-2 p-3.5 bg-red-50/90 border border-red-200/80 rounded-2xl text-sm text-red-700 shadow-sm">
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span className="flex-1">{costError}</span>
                 <a href="/profile" className="text-red-600 underline font-medium shrink-0">去充值</a>
-                <button onClick={() => setCostError(null)} className="text-red-400 hover:text-red-600 ml-1">×</button>
+                <button onClick={() => setCostError(null)} className="p-1 text-red-400 hover:text-red-600 hover:bg-red-100 rounded-lg transition-colors">×</button>
               </div>
             )}
             
-            {/* 模式选择：分段控制器，三种模式始终可见、易于区分 */}
-            <div className="flex flex-wrap items-center gap-3 mb-2.5">
-              <div className="flex rounded-xl bg-slate-100 p-0.5 border border-slate-200/80 shadow-inner">
+            {/* 模式选择 */}
+            <div className="flex flex-wrap items-center gap-4 mb-3">
+              <div className="flex items-center gap-2">
                 <button
-                  type="button"
-                  onClick={() => setMode("normal")}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    mode === "normal"
-                      ? "bg-white text-slate-800 shadow-sm border border-slate-200/80"
-                      : "text-slate-500 hover:text-slate-700"
+                  onClick={() => setDeepResearch(false)}
+                  className={`relative flex flex-col items-center justify-center px-4 py-2 rounded-xl transition-all cursor-pointer min-w-[120px] ${
+                    !deepResearch
+                      ? "bg-gradient-to-r from-violet-500 to-indigo-500 text-white shadow-md shadow-violet-200/50"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200/60"
                   }`}
                 >
-                  <MessageCircle className="w-4 h-4" />
-                  普通对话
+                  <span className="text-sm font-semibold leading-tight">
+                    快速响应
+                  </span>
+                  <span className="text-[10px] opacity-80 leading-tight">
+                    自动·高效
+                  </span>
                 </button>
                 <button
-                  type="button"
-                  onClick={() => setMode("agent")}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    mode === "agent"
-                      ? "bg-indigo-500 text-white shadow-sm"
-                      : "text-slate-500 hover:text-slate-700"
+                  onClick={() => setDeepResearch(true)}
+                  className={`relative flex flex-col items-center justify-center px-4 py-2 rounded-xl transition-all cursor-pointer min-w-[120px] ${
+                    deepResearch
+                      ? "bg-gradient-to-r from-violet-500 to-indigo-500 text-white shadow-md shadow-violet-200/50"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200/60"
                   }`}
                 >
-                  <Bot className="w-4 h-4" />
-                  智能体
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("paper_qa")}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    mode === "paper_qa"
-                      ? "bg-emerald-500 text-white shadow-sm"
-                      : "text-slate-500 hover:text-slate-700"
-                  }`}
-                >
-                  <FileText className="w-4 h-4" />
-                  论文问答
+                  <span className="text-sm font-semibold leading-tight">
+                    智能体模式
+                  </span>
+                  <span className="text-[10px] opacity-80 leading-tight">
+                    多步骤·深入
+                  </span>
                 </button>
               </div>
-              <span className="text-xs text-slate-400">
-                {mode === "normal" ? "快速问答，单轮回复" : mode === "agent" ? "多步规划、工具调用与任务执行" : "仅基于已有文档进行问答"}
-              </span>
-              {mode !== "paper_qa" && (
-                <button
-                  onClick={() => setWebSearch(!webSearch)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                    webSearch
-                      ? "bg-emerald-500 text-white shadow-sm shadow-emerald-200"
-                      : "bg-slate-100 text-slate-500 hover:bg-slate-200"
-                  }`}
-                >
-                  <Globe className="w-3.5 h-3.5" />
-                  联网搜索
-                </button>
-              )}
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-slate-500">
+                  {deepResearch ? (
+                    <>
+                      <span className="font-medium text-violet-600">● 智能体模式</span>
+                      <span className="ml-2">允许长时间规划、多轮搜索和工具调用</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-medium text-slate-700">● 快速响应模式</span>
+                      <span className="ml-2">系统自动判断，按需使用搜索和工具</span>
+                    </>
+                  )}
+                </span>
+              </div>
             </div>
 
             {imagePreview && (
-              <div className="mb-2 relative inline-block">
-                <img src={imagePreview} alt="预览" className="h-20 rounded-lg border border-gray-200 object-cover" />
+              <div className="mb-2.5 relative inline-block">
+                <img src={imagePreview} alt="预览" className="h-20 rounded-xl border border-slate-200/80 object-cover shadow-sm" />
                 <button
                   onClick={removeImage}
-                  className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-xs hover:bg-red-600"
+                  className="absolute -top-1.5 -right-1.5 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center text-sm hover:bg-red-600 shadow-md transition-colors"
                 >
                   ×
                 </button>
@@ -1130,30 +1126,32 @@ export default function ChatPage() {
             )}
 
             {attachments.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
+              <div className="mb-2.5 flex flex-wrap gap-2">
                 {attachments.map((attachment) => (
                   <div
                     key={attachment.id}
-                    className="relative flex items-center gap-2 px-3 py-2 bg-gray-100 rounded-lg border border-gray-200"
+                    className="relative flex items-center gap-2.5 px-3 py-2 bg-slate-50 border border-slate-200/80 rounded-xl shadow-sm"
                   >
                     {attachment.preview ? (
-                      <img src={attachment.preview} alt="" className="w-8 h-8 rounded object-cover" />
+                      <img src={attachment.preview} alt="" className="w-9 h-9 rounded-lg object-cover" />
                     ) : (
-                      <FileText className="w-5 h-5 text-gray-500" />
+                      <div className="w-9 h-9 rounded-lg bg-slate-200/80 flex items-center justify-center">
+                        <FileText className="w-4 h-4 text-slate-500" />
+                      </div>
                     )}
-                    <div className="flex flex-col">
-                      <span className="text-xs font-medium text-gray-700 max-w-24 truncate">{attachment.file.name}</span>
-                      <span className="text-[10px] text-gray-400">{formatFileSize(attachment.file.size)}</span>
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-medium text-slate-700 max-w-28 truncate">{attachment.file.name}</span>
+                      <span className="text-[10px] text-slate-400">{formatFileSize(attachment.file.size)}</span>
                     </div>
                     {attachment.uploading && (
-                      <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                      <div className="w-4 h-4 border-2 border-violet-500 border-t-transparent rounded-full animate-spin shrink-0" />
                     )}
                     {!attachment.uploading && (
                       <button
                         onClick={() => removeAttachment(attachment.id)}
-                        className="p-0.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded"
+                        className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors shrink-0"
                       >
-                        <Trash2 className="w-3 h-3" />
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     )}
                   </div>
@@ -1162,12 +1160,10 @@ export default function ChatPage() {
             )}
 
             <div
-              className={`flex items-end gap-2 rounded-xl p-2 transition-all shadow-sm ${
-                mode === "agent"
-                  ? "bg-indigo-50/70 border-2 border-indigo-200/80 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100/60 focus-within:bg-indigo-50/90"
-                  : mode === "paper_qa"
-                  ? "bg-emerald-50/70 border-2 border-emerald-200/80 focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-100/60 focus-within:bg-emerald-50/90"
-                  : "bg-slate-50/80 border border-slate-200 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100/60 focus-within:bg-white"
+              className={`flex items-end gap-2 rounded-2xl p-2.5 transition-all ${
+                deepResearch
+                  ? "bg-violet-50/80 border-2 border-violet-200/70 focus-within:border-violet-400 focus-within:ring-2 focus-within:ring-violet-100"
+                  : "bg-slate-50/90 border border-slate-200/80 focus-within:border-violet-400 focus-within:ring-2 focus-within:ring-violet-100/50 focus-within:bg-white"
               }`}
             >
               <input
@@ -1188,7 +1184,7 @@ export default function ChatPage() {
               {isLoading ? (
                 <button
                   onClick={handleStop}
-                  className="p-2 text-red-500 hover:text-red-600 rounded-lg hover:bg-red-50 shrink-0 transition-colors"
+                  className="p-2.5 text-red-500 hover:text-red-600 rounded-xl hover:bg-red-50 shrink-0 transition-colors"
                   title="停止生成"
                 >
                   <X className="w-5 h-5" />
@@ -1197,14 +1193,14 @@ export default function ChatPage() {
                 <>
                   <button
                     onClick={() => imageInputRef.current?.click()}
-                    className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-200 shrink-0"
+                    className="p-2.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200/80 rounded-xl shrink-0 transition-colors"
                     title="上传图片"
                   >
                     <ImagePlus className="w-5 h-5" />
                   </button>
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-200 shrink-0"
+                    className="p-2.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200/80 rounded-xl shrink-0 transition-colors"
                     title="上传文件"
                   >
                     <Paperclip className="w-5 h-5" />
@@ -1217,15 +1213,15 @@ export default function ChatPage() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 rows={1}
-                placeholder={mode === "agent" ? "描述你的研究任务或拖拽论文..." : mode === "paper_qa" ? "基于你保存的所有论文提问或拖拽论文..." : "输入你的问题或拖拽论文..."}
-                className="flex-1 resize-none bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400 max-h-32 py-2"
-                style={{ minHeight: "36px" }}
+                placeholder={deepResearch ? "描述你的智能体任务或拖拽论文..." : "输入你的问题或拖拽论文..."}
+                className="flex-1 resize-none bg-transparent outline-none text-sm text-slate-800 placeholder-slate-400 max-h-32 py-2 px-1"
+                style={{ minHeight: "38px" }}
                 disabled={isLoading}
               />
               {isLoading ? (
                 <button
                   onClick={handleStop}
-                  className="p-2 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors shrink-0"
+                  className="p-2.5 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-all shrink-0 shadow-md hover:shadow-lg"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -1233,7 +1229,7 @@ export default function ChatPage() {
                 <button
                   onClick={handleSubmit}
                   disabled={(!input.trim() && !imagePreview && attachments.length === 0)}
-                  className="p-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow shrink-0"
+                  className="p-2.5 bg-gradient-to-r from-violet-500 to-indigo-500 text-white rounded-xl hover:from-violet-600 hover:to-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg shrink-0"
                 >
                   <Send className="w-4 h-4" />
                 </button>

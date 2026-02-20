@@ -5,6 +5,7 @@ from app.infrastructure.logging.config import logger
 import requests
 import asyncio
 import random
+import re
 from app.core.config import settings
 
 
@@ -63,10 +64,13 @@ class PaperDownloadTool(BaseTool):
             year = paper.get("year", "")
             cited_by = paper.get("citedBy", paper.get("citations", 0))
 
-            safe_title = "".join([c if c.isalnum() or c in (' ', '-', '_') else '_' for c in title])
-            filename = f"{safe_title}.pdf"
+            safe_title = re.sub(r'[^\w\-_ ]', '_', title)
+            safe_title = re.sub(r'\s+', ' ', safe_title).strip()
+            
             if year:
-                filename = f"{year}_{filename}"
+                filename = f"{year}_{safe_title}.pdf"
+            else:
+                filename = f"{safe_title}.pdf"
 
             try:
                 existing_doc = document_service.find_existing_paper(user_id, pdf_url=pdf_url, title=title)

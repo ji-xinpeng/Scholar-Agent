@@ -130,6 +130,15 @@ textarea.input-field {
   margin: 0;
 }
 
+/* Chat area: subtle gradient + dot pattern */
+.chat-area-bg {
+  background-color: #fafbff;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(139, 92, 246, 0.06), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 50%, rgba(99, 102, 241, 0.04), transparent),
+    radial-gradient(ellipse 60% 40% at 0% 50%, rgba(139, 92, 246, 0.04), transparent);
+}
+
 /* Prose override for user messages (keep simple) */
 .prose h3 {
   margin-top: 0.75rem;

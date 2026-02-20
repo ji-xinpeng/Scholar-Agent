@@ -5,7 +5,7 @@ from app.infrastructure.logging.config import logger
 
 
 class AgentService:
-    """Agent 服务层 - 向后兼容的服务类"""
+    """Agent 服务层 - ReAct 模式"""
     
     def __init__(self):
         self.session_service = SessionService()
@@ -20,8 +20,8 @@ class AgentService:
         provider: Optional[str] = None,
         model: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
-        """普通问答模式 - 流式返回直接回答（向后兼容）"""
-        logger.info(f"向后兼容的普通聊天模式调用")
+        """普通问答模式 - 流式返回直接回答"""
+        logger.info(f"普通聊天模式调用")
         async for chunk in agent_orchestrator.run_normal_chat(
             session_id, "default", query, document_ids, None, web_search,
             provider=provider, model=model
@@ -38,11 +38,11 @@ class AgentService:
         provider: Optional[str] = None,
         model: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
-        """Agent模式 - 智能规划、调用工具、生成回答（向后兼容）"""
-        logger.info(f"向后兼容的 Agent 聊天模式调用")
+        """智能体模式 - ReAct 模式（思考-行动-观察循环）"""
+        logger.info(f"智能体模式调用 (ReAct)")
         async for chunk in agent_orchestrator.run_agent_chat(
             session_id, "default", query, document_ids,
-            provider=provider, model=model
+            llm_provider=provider, llm_model=model
         ):
             yield chunk
 

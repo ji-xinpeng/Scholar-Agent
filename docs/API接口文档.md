@@ -1,6 +1,6 @@
 # Scholar Agent 后端 API 接口文档
 
-> 版本: v1.2 | 更新日期: 2026-02-17
+> 版本: v2.0 | 更新日期: 2026-02-20
 >
 > Base URL: `http://localhost:8088/api/v1`
 >
@@ -50,6 +50,7 @@
 ### `POST /api/v1/chat/chat`
 
 > 核心接口。前端发送用户消息，后端以 SSE（Server-Sent Events）流式返回处理过程和回答。
+> 系统会自动识别用户意图，选择合适的处理方式（简单对话、论文问答或智能体模式）。
 
 **请求体**:
 ```json
@@ -57,9 +58,10 @@
   "message": "大语言模型推理能力的最新进展有哪些？",
   "session_id": "550e8400-e29b-41d4-a716-446655440000",  // 可选，为空则自动创建新会话
   "user_id": "default",
-  "mode": "normal",       // "normal" = 普通问答 | "agent" = 智能体模式
-  "web_search": false,     // 是否启用联网搜索
-  "document_ids": ["doc-uuid-1", "doc-uuid-2"]  // 可选，关联的文档ID列表
+  "deep_research": false,  // 深度研究模式：允许长时间多步骤规划和大规模搜索
+  "document_ids": ["doc-uuid-1", "doc-uuid-2"],  // 可选，关联的文档ID列表
+  "provider": "deepseek",  // 可选，LLM 提供商，如 "qwen", "deepseek"
+  "model": "deepseek-chat" // 可选，模型名称，如 "qwen-turbo", "deepseek-chat"
 }
 ```
 
@@ -68,9 +70,16 @@
 | message | string | ✅ | 用户消息内容 |
 | session_id | string\|null | ❌ | 会话ID，为空时自动创建新会话 |
 | user_id | string | ❌ | 用户ID，默认 "default" |
-| mode | string | ❌ | "normal" 或 "agent"，默认 "normal" |
-| web_search | boolean | ❌ | 是否联网搜索，默认 false |
+| deep_research | boolean | ❌ | 深度研究模式，默认 false。false=快速响应，true=允许长时间多步骤规划和大规模搜索 |
 | document_ids | string[] | ❌ | 关联的文档ID列表，文档内容会被自动添加到对话上下文中 |
+| provider | string | ❌ | LLM 提供商，如 "qwen", "deepseek" |
+| model | string | ❌ | 模型名称，如 "qwen-turbo", "deepseek-chat" |
+
+**智能模式说明**：
+- **简单对话**：简单问候、直接知识问答，无需复杂工具
+- **论文问答**：有选中文档或问题明显关于已有文档
+- **智能体模式**：需要多步骤规划、搜索、下载等工具的复杂任务
+- **深度研究模式**：强制使用智能体模式，允许更深入的研究
 
 **响应**: `Content-Type: text/event-stream`
 
@@ -86,11 +95,14 @@
 **后端处理流程**:
 1. 若 `session_id` 为空或不存在 → 创建新会话
 2. 将用户消息存入 messages 表
-3. 根据 `mode` 选择处理逻辑：
-   - `normal`: 直接生成回答，以 `stream` 事件逐块推送
-   - `agent`: 先推送 `plan` 事件（包含 thought），然后依次推送每个步骤的 `step_start` → `step_progress` → `step_complete`（包含 thought_summary），中间穿插 `stream` 事件
-4. 最后推送 `done` 事件
-5. 将助手完整回答存入 messages 表
+3. 意图识别：
+   - 有选中文档 → 论文问答
+   - 问题简短简单 → 简单对话
+   - 需要搜索、下载等 → 智能体模式
+   - deep_research=true → 强制智能体模式
+4. 根据识别的意图执行相应逻辑
+5. 最后推送 `done` 事件
+6. 将助手完整回答存入 messages 表
 
 ---
 
@@ -536,55 +548,60 @@
 
 | event | 触发模式 | 说明 |
 |-------|---------|------|
+| `user_message` | All | 用户消息已添加到会话 |
+| `thinking` | All | 正在思考/处理中 |
 | `plan` | Agent | 推送研究计划（TODO 列表），包含 thought |
-| `step_start` | Both | 某步骤开始执行 |
-| `step_progress` | Agent | 步骤执行进度更新 |
-| `step_complete` | Both | 某步骤执行完成，包含 thought_summary |
-| `stream` | Both | 流式文本内容片段 |
-| `done` | Both | 全部完成 |
+| `step_start` | Agent | 某步骤开始执行 |
+| `step_complete` | Agent | 某步骤执行完成，包含 thought_summary |
+| `stream` | All | 流式文本内容片段 |
+| `assistant_message` | All | 助手消息已添加到会话 |
 | `doc_updated` | Agent | 文档内容被更新 |
+| `error` | All | 发生错误 |
+| `done` | All | 全部完成 |
 
 ### 6.2 各事件 data 格式
+
+#### `user_message` — 用户消息已添加
+
+```
+event: user_message
+data: {"id": "msg-uuid", "session_id": "session-uuid", "role": "user", "content": "...", "timestamp": "..."}
+```
+
+#### `thinking` — 正在思考/处理中
+
+```
+event: thinking
+data: {"message": "正在分析需求，制定执行计划...", "timestamp": "..."}
+```
 
 #### `plan` — 推送研究计划
 
 ```
 event: plan
-data: {"plan": [{"id": "s1", "action": "检索学术数据库", "tool": "SearchTool", "status": "pending"}, ...], "thought": "分析用户需求...", "timestamp": "..."}
+data: {"plan": [{"id": "0", "action": "搜索相关论文", "tool_name": "SearchTool", "status": "pending"}, ...], "thought": "分析用户需求...", "timestamp": "..."}
 ```
 
 | 字段 | 说明 |
 |------|------|
 | plan[].id | 步骤唯一ID |
 | plan[].action | 步骤描述（中文） |
-| plan[].tool | 使用的工具名 |
-| plan[].status | 初始状态，固定 "pending" |
+| plan[].tool_name | 使用的工具名 |
+| plan[].status | 步骤状态："pending"/"running"/"done" |
 | thought | Agent 对用户需求的理解和执行思路 |
 
 #### `step_start` — 步骤开始
 
 ```
 event: step_start
-data: {"step_id": "s1", "action": "检索学术数据库", "timestamp": "..."}
+data: {"step_id": "0", "action": "搜索相关论文", "tool_name": "SearchTool", "params": {...}, "timestamp": "..."}
 ```
-
-#### `step_progress` — 步骤进度
-
-```
-event: step_progress
-data: {"step_id": "s1", "progress": 0.5, "message": "已搜索 50% 的数据源", "timestamp": "..."}
-```
-
-| 字段 | 说明 |
-|------|------|
-| progress | 0.0 ~ 1.0 的浮点数 |
-| message | 当前进度的文字说明 |
 
 #### `step_complete` — 步骤完成
 
 ```
 event: step_complete
-data: {"step_id": "s1", "result": {"papers_found": 5, "papers": [...]}, "thought_summary": "检索学术论文 · 找到 5 篇相关文献", "timestamp": "..."}
+data: {"step_id": "0", "result": {"papers_found": 5, "papers": [...]}, "thought_summary": "检索学术论文 · 找到 5 篇相关文献", "tool_name": "SearchTool", "params": {...}, "timestamp": "..."}
 ```
 
 #### `stream` — 流式文本片段
@@ -596,29 +613,44 @@ data: {"content": "这是一段回答内容的片段...", "timestamp": "..."}
 
 > 前端需要将多次 `stream` 事件的 `content` 累加拼接，实时渲染。
 
-#### `done` — 完成
+#### `assistant_message` — 助手消息已添加
 
 ```
-event: done
-data: {"content": "完整的回答内容...", "timestamp": "..."}
+event: assistant_message
+data: {"id": "msg-uuid", "session_id": "session-uuid", "role": "assistant", "content": "...", "metadata": {...}, "timestamp": "..."}
 ```
-
-> 收到 `done` 后，前端应：
-> 1. 将累积内容作为 assistant 消息添加到列表
-> 2. 清空流式内容
-> 3. 解除 loading 状态
 
 #### `doc_updated` — 文档内容更新
 
 ```
 event: doc_updated
-data: {"doc_id": "doc-uuid-1", "timestamp": "..."}
+data: {"doc_id": "doc-uuid-1", "action": "update", "timestamp": "..."}
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | doc_id | string | 被更新的文档ID |
+| action | string | 操作类型："create"/"update"/"append"/"replace"/"delete" |
 | timestamp | string | 时间戳 |
+
+#### `error` — 发生错误
+
+```
+event: error
+data: {"message": "错误描述信息", "timestamp": "..."}
+```
+
+#### `done` — 完成
+
+```
+event: done
+data: {"timestamp": "..."}
+```
+
+> 收到 `done` 后，前端应：
+> 1. 将累积内容作为 assistant 消息添加到列表（如果尚未通过 assistant_message 事件添加）
+> 2. 清空流式内容
+> 3. 解除 loading 状态
 
 ### 6.3 普通模式事件流示例
 

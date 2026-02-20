@@ -44,8 +44,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     user_id: str = "default"
-    mode: str = "normal"  # "normal" 或 "agent"
-    web_search: bool = False
+    deep_research: bool = False  # 深度研究模式：允许长时间多步骤规划和大规模搜索
     document_ids: Optional[List[str]] = None
     provider: Optional[str] = None  # LLM 提供商，如 "qwen", "deepseek"
     model: Optional[str] = None  # 模型名称，如 "qwen-turbo", "deepseek-chat"

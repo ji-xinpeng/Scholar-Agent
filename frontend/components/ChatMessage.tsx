@@ -39,14 +39,14 @@ export default function ChatMessage({ role, content, image, attachments, isStrea
     let html = text;
 
     html = html.replace(/\[文档引用: ([^\]]+)\]\(([^)]+)\)/g, (_m, docName, docId) => {
-      return `<span class="doc-ref inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md text-xs cursor-pointer hover:bg-indigo-100 transition-colors border border-indigo-200" data-doc-id="${docId}"><ExternalLink class="w-3 h-3" />${docName}</span>`;
+      return `<span class="doc-ref inline-flex items-center gap-1 px-2.5 py-1 bg-violet-50 text-violet-700 rounded-lg text-xs font-medium cursor-pointer hover:bg-violet-100 transition-colors border border-violet-200/60 shadow-sm" data-doc-id="${docId}"><ExternalLink class="w-3 h-3" />${docName}</span>`;
     });
 
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
-      return `<div class="my-2 rounded-lg overflow-hidden border border-slate-200"><div class="bg-slate-100 px-3 py-1 text-[10px] font-mono text-slate-500 border-b border-slate-200">${lang || "code"}</div><pre class="bg-slate-900 text-slate-200 text-xs p-3 overflow-x-auto leading-relaxed"><code>${code.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre></div>`;
+      return `<div class="my-3 rounded-xl overflow-hidden border border-slate-200/80 shadow-sm"><div class="bg-slate-100/90 px-3 py-1.5 text-[10px] font-mono text-slate-500 border-b border-slate-200/80">${lang || "code"}</div><pre class="bg-slate-800/95 text-slate-100 text-xs p-4 overflow-x-auto leading-relaxed"><code>${code.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre></div>`;
     });
 
-    html = html.replace(/`([^`]+)`/g, '<code class="px-1.5 py-0.5 bg-slate-100 text-slate-700 rounded text-xs font-mono border border-slate-200">$1</code>');
+    html = html.replace(/`([^`]+)`/g, '<code class="px-2 py-0.5 bg-slate-100 text-slate-700 rounded-md text-xs font-mono border border-slate-200/80">$1</code>');
 
     html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
@@ -95,21 +95,21 @@ export default function ChatMessage({ role, content, image, attachments, isStrea
     <div className={`flex gap-3 animate-fade-in ${isUser ? "flex-row-reverse" : "flex-row"}`}>
       {/* Avatar */}
       <div
-        className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-sm ${
+        className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ring-2 ring-white/80 shadow-md ${
           isUser
-            ? "bg-gradient-to-br from-indigo-500 to-indigo-600"
-            : "bg-gradient-to-br from-violet-500 to-indigo-600"
+            ? "bg-gradient-to-br from-indigo-500 to-violet-600"
+            : "bg-gradient-to-br from-violet-500 to-fuchsia-500"
         }`}
       >
-        {isUser ? <User className="w-4 h-4 text-white" /> : <Bot className="w-4 h-4 text-white" />}
+        {isUser ? <User className="w-4 h-4 text-white" strokeWidth={2.2} /> : <Bot className="w-4 h-4 text-white" strokeWidth={2.2} />}
       </div>
 
       {/* Message Bubble */}
       <div
-        className={`max-w-[80%] text-sm leading-relaxed ${
+        className={`max-w-[82%] text-sm leading-relaxed ${
           isUser
-            ? "bg-gradient-to-br from-indigo-500 to-indigo-600 text-white rounded-2xl rounded-tr-md px-4 py-2.5 shadow-sm"
-            : "text-slate-700"
+            ? "bg-gradient-to-br from-indigo-500 to-violet-600 text-white rounded-2xl rounded-tr-sm px-4 py-3 shadow-md shadow-indigo-200/40"
+            : "text-slate-700 bg-white/90 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm border border-slate-100/80"
         }`}
       >
         {/* Image */}
@@ -117,7 +117,7 @@ export default function ChatMessage({ role, content, image, attachments, isStrea
           <img
             src={image}
             alt="用户上传的图片"
-            className="max-w-[280px] rounded-xl mb-2 shadow-sm"
+            className="max-w-[280px] rounded-xl mb-2 shadow-md border border-white/20"
           />
         )}
 
@@ -127,8 +127,8 @@ export default function ChatMessage({ role, content, image, attachments, isStrea
             {attachments.map((attachment) => (
               <div
                 key={attachment.id}
-                className={`flex items-center gap-2.5 p-2 rounded-lg ${
-                  isUser ? "bg-white/15" : "bg-slate-50 border border-slate-200"
+                className={`flex items-center gap-2.5 p-2.5 rounded-xl ${
+                  isUser ? "bg-white/20" : "bg-slate-50/80 border border-slate-200/80"
                 }`}
               >
                 {attachment.preview ? (
@@ -159,18 +159,18 @@ export default function ChatMessage({ role, content, image, attachments, isStrea
             dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
           />
         ) : !image && (!attachments || attachments.length === 0) && isStreaming ? (
-          <div className="flex items-center gap-1 py-1">
+          <div className="flex items-center gap-1.5 py-1">
             <div className="flex gap-1">
-              <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-              <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-              <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+              <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+              <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: "120ms" }} />
+              <div className="w-2 h-2 bg-violet-400 rounded-full animate-bounce" style={{ animationDelay: "240ms" }} />
             </div>
           </div>
         ) : null}
 
         {/* Streaming cursor */}
         {isStreaming && content && (
-          <span className="inline-block w-0.5 h-4 bg-indigo-500 animate-blink ml-0.5 align-middle" />
+          <span className="inline-block w-0.5 h-4 bg-violet-500 rounded-full animate-blink ml-0.5 align-middle" />
         )}
       </div>
     </div>

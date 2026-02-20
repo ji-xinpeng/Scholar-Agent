@@ -12,6 +12,7 @@ from app.tools.search.filter import FilterTool
 from app.tools.content.citation_generator import CitationTool
 from app.tools.document.editor import DocEditTool
 from app.tools.user.profile_builder import ProfileTool
+from app.tools.llm.llm_call import LLMCallTool
 
 
 class ToolHub:
@@ -23,7 +24,7 @@ class ToolHub:
 
     def _register_defaults(self):
         """注册默认工具"""
-        for tool_cls in [SearchTool, PaperDownloadTool, MultiModalRAGTool, SummarizeTool, FilterTool, CitationTool, DocEditTool, ProfileTool]:
+        for tool_cls in [SearchTool, PaperDownloadTool, MultiModalRAGTool, SummarizeTool, FilterTool, CitationTool, DocEditTool, ProfileTool, LLMCallTool]:
             tool = tool_cls()
             self._tools[tool.name] = tool
 

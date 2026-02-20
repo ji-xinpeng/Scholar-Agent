@@ -25,19 +25,21 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = ""
     REDIS_DEFAULT_TTL: int = 3600  # 默认缓存 1 小时
 
-    # Qwen
-    QWEN_API_KEY: str = "sk-ea68b4e98b634f37872b7ab3dbb51a7e"
-    QWEN_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    QWEN_MODEL: str = "qwen-plus"
+    # 豆包 (Doubao) - 火山引擎
+    DOUBAO_API_KEY: str = "2192cc18-ff14-41bd-a711-f4d35a85bc59"  # 已配置的 API Key
+    DOUBAO_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
+    DOUBAO_MODEL: str = "doubao-seed-2-0-mini-260215"
 
-    # DeepSeek
-    DEEPSEEK_API_KEY: str = "sk-cf60007aadf148aa9639fffed8f5bf2b"
-    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-    DEEPSEEK_MODEL: str = "deepseek-chat"
-
-    # 默认 LLM 提供商
-    DEFAULT_LLM_PROVIDER: str = "deepseek"
-
+    # 根据意图选择模型配置 - 豆包
+    # 简单对话使用更便宜的模型
+    SIMPLE_CHAT_MODEL: str = "doubao-seed-2-0-mini-260215"  # 豆包的经济模型
+    
+    # 论文问答使用适中的模型
+    PAPER_QA_MODEL: str = "doubao-seed-2-0-lite-260215"
+    
+    # 智能体模式使用更强的模型
+    AGENT_MODEL: str = "doubao-seed-2-0-pro-260215"  # 豆包的高级模型
+    
     class Config:
         case_sensitive = True
         env_file = ".env"

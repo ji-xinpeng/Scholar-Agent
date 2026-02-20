@@ -5,7 +5,7 @@ from app.infrastructure.logging.config import logger
 
 class FilterTool(BaseTool):
     name = "FilterTool"
-    description = "筛选与排序检索结果，支持多种筛选条件和排序方式"
+    description = "筛选与排序检索结果，支持多种筛选条件和排序方式。支持根据用户知识水平进行个性化筛选和排序。"
     parameters = {
         "papers": {"type": "array", "description": "论文列表（若本步骤紧接在 SearchTool 或 FilterTool 之后，可不传，系统自动使用上一步结果）", "required": True},
         "sort_by": {"type": "string", "description": "排序字段：citations（引用数）/year（年份）/title（标题）/relevance（相关性）", "default": "relevance"},
@@ -16,7 +16,8 @@ class FilterTool(BaseTool):
         "year_to": {"type": "integer", "description": "结束年份（可选，0表示不限制）", "default": 0},
         "title_contains": {"type": "string", "description": "标题包含关键词（可选）", "default": ""},
         "abstract_contains": {"type": "string", "description": "摘要包含关键词（可选）", "default": ""},
-        "publication_contains": {"type": "string", "description": "出版信息包含关键词（可选，用于筛选会议/期刊）", "default": ""}
+        "publication_contains": {"type": "string", "description": "出版信息包含关键词（可选，用于筛选会议/期刊）", "default": ""},
+        "user_id": {"type": "string", "description": "用户ID，用于根据用户知识水平进行个性化筛选", "default": ""}
     }
 
     def resolve_params(self, params: Dict[str, Any], previous_results: Dict[str, Any]) -> Dict[str, Any]:
@@ -45,12 +46,45 @@ class FilterTool(BaseTool):
         title_contains = kwargs.get("title_contains", "")
         abstract_contains = kwargs.get("abstract_contains", "")
         publication_contains = kwargs.get("publication_contains", "")
+        user_id = kwargs.get("user_id", "")
         
         if not papers or not isinstance(papers, list):
             return {
                 "success": False,
                 "error": "无效的论文列表"
             }
+        
+        # 获取用户资料用于个性化筛选
+        user_profile = None
+        knowledge_level = "intermediate"
+        research_field = ""
+        if user_id:
+            try:
+                from app.application.services.user_service import user_service
+                user_profile = user_service.get_profile(user_id)
+                knowledge_level = user_profile.get("knowledge_level", "intermediate")
+                research_field = user_profile.get("research_field", "")
+                logger.info(f"FilterTool 获取到用户资料: user_id={user_id}, knowledge_level={knowledge_level}")
+            except Exception as e:
+                logger.warning(f"FilterTool 获取用户资料失败: {e}")
+        
+        # 根据知识水平调整筛选和排序策略
+        if knowledge_level == "beginner":
+            # 初学者：优先考虑综述类、基础类论文，引用数适中，年份较新
+            if min_citations == 0:
+                min_citations = 10
+            if max_citations == 0:
+                max_citations = 500
+            if sort_by == "relevance":
+                sort_by = "year"
+            logger.info(f"FilterTool 应用初学者策略: min_citations={min_citations}, max_citations={max_citations}, sort_by={sort_by}")
+        elif knowledge_level == "advanced":
+            # 高级用户：优先考虑高引用、前沿论文
+            if min_citations == 0:
+                min_citations = 50
+            if sort_by == "relevance":
+                sort_by = "citations"
+            logger.info(f"FilterTool 应用高级用户策略: min_citations={min_citations}, sort_by={sort_by}")
 
         try:
             filtered_papers = []
@@ -140,6 +174,8 @@ class FilterTool(BaseTool):
                 "sort_order": sort_order,
                 "filter_info": filter_info,
                 "total_count": len(sorted_papers),
+                "knowledge_level": knowledge_level,
+                "user_profile_used": user_profile is not None,
                 "message": f"筛选完成，共 {len(sorted_papers)} 篇论文 | 排序: {sort_info} | 筛选: {filter_info}"
             }
         except Exception as e:

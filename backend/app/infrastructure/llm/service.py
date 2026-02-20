@@ -1,56 +1,170 @@
 from typing import List, Optional, AsyncGenerator
 from functools import lru_cache
+from openai import AsyncOpenAI
+from dataclasses import dataclass, field
+from enum import Enum
 
 from app.core.config import settings
 from app.infrastructure.logging.config import logger
-from app.infrastructure.llm.base import BaseLLM, ChatMessage, ChatResponse
-from app.infrastructure.llm.factory import llm_factory, LLMConfig
 
 
-class LLMService:
-    """LLM 服务层，提供统一的模型调用接口"""
+class MessageRole(str, Enum):
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
 
-    def __init__(self):
-        self._initialize_configs()
 
-    def _initialize_configs(self):
-        """从配置文件初始化所有提供商的配置"""
-        if settings.QWEN_API_KEY:
-            logger.info(f"注册Qwen提供商 - 模型: {settings.QWEN_MODEL}")
-            llm_factory.register_config(LLMConfig(
-                provider="qwen",
-                api_key=settings.QWEN_API_KEY,
-                base_url=settings.QWEN_BASE_URL or None,
-                model=settings.QWEN_MODEL
-            ))
+@dataclass
+class ChatMessage:
+    role: MessageRole
+    content: str
+    name: Optional[str] = None
+    tool_call_id: Optional[str] = None
 
-        if settings.DEEPSEEK_API_KEY:
-            logger.info(f"注册DeepSeek提供商 - 模型: {settings.DEEPSEEK_MODEL}")
-            llm_factory.register_config(LLMConfig(
-                provider="deepseek",
-                api_key=settings.DEEPSEEK_API_KEY,
-                base_url=settings.DEEPSEEK_BASE_URL or None,
-                model=settings.DEEPSEEK_MODEL
-            ))
 
-    def get_llm(self, provider: Optional[str] = None, model: Optional[str] = None) -> BaseLLM:
-        """
-        获取 LLM 实例
+@dataclass
+class ChatResponse:
+    content: str
+    model: str
+    usage: dict = field(default_factory=dict)
+    finish_reason: Optional[str] = None
+    raw_response: Optional[any] = None
 
-        Args:
-            provider: 提供商名称，不提供则使用默认
-            model: 模型名称，不提供则使用默认模型
 
-        Returns:
-            BaseLLM 实例
-        """
-        provider = provider or settings.DEFAULT_LLM_PROVIDER
-        return llm_factory.create(provider, model=model)
+class DoubaoLLM:
+    """豆包大模型"""
+
+    name = "doubao"
+    default_model = "doubao-seed-2-0-mini-260215"
+    supported_models = [
+        "doubao-seedream-4-5-251128",
+        "doubao-seed-2-0-mini-260215",
+        "doubao-seed-2-0-lite-260215",
+        "doubao-seed-2-0-pro-260215",
+        "doubao-seed-2-0-code-preview-260215",
+        "doubao-embedding-large-text-250515",
+        "doubao-embedding-vision-251215"
+    ]
+
+    def __init__(self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None):
+        self.api_key = api_key
+        self.base_url = base_url or "https://ark.cn-beijing.volces.com/api/v3"
+        self.model = model or self.default_model
+        
+        if not api_key:
+            raise ValueError("API key is required for DoubaoLLM")
+        
+        if self.model not in self.supported_models:
+            logger.warning(f"Model '{self.model}' not in supported models list. Using default model '{self.default_model}'.")
+            self.model = self.default_model
+        
+        self.client = AsyncOpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key
+        )
+
+    def _convert_messages(self, messages: List[ChatMessage]) -> List[dict]:
+        converted = []
+        for msg in messages:
+            converted_msg = {"role": msg.role.value, "content": msg.content}
+            if msg.name:
+                converted_msg["name"] = msg.name
+            converted.append(converted_msg)
+        return converted
 
     async def chat(
         self,
         messages: List[ChatMessage],
-        provider: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        top_p: float = 1.0,
+        stream: bool = False,
+        **kwargs
+    ) -> ChatResponse:
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=self._convert_messages(messages),
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                stream=stream
+            )
+
+            choice = response.choices[0]
+            return ChatResponse(
+                content=choice.message.content,
+                model=self.model,
+                usage=response.usage.model_dump() if response.usage else {},
+                finish_reason=choice.finish_reason,
+                raw_response=response.model_dump()
+            )
+        except Exception as e:
+            logger.error(f"DoubaoLLM chat 调用失败: {e}", exc_info=True)
+            raise
+
+    async def chat_stream(
+        self,
+        messages: List[ChatMessage],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        top_p: float = 1.0,
+        **kwargs
+    ) -> AsyncGenerator[str, None]:
+        try:
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=self._convert_messages(messages),
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                stream=True
+            )
+
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            logger.error(f"DoubaoLLM chat_stream 调用失败: {e}", exc_info=True)
+            raise
+
+
+class LLMService:
+    """LLM 服务层"""
+
+    def __init__(self):
+        self._llm = None
+        self._initialize_llm()
+
+    def _initialize_llm(self):
+        """初始化豆包 LLM 实例"""
+        if not settings.DOUBAO_API_KEY:
+            error_msg = "豆包(Doubao) API Key 未配置，请在 config.py 中设置 DOUBAO_API_KEY"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        logger.info(f"初始化豆包(Doubao) LLM - 模型: {settings.DOUBAO_MODEL}")
+        self._llm = DoubaoLLM(
+            api_key=settings.DOUBAO_API_KEY,
+            base_url=settings.DOUBAO_BASE_URL,
+            model=settings.DOUBAO_MODEL
+        )
+
+    def get_llm(self, model: Optional[str] = None) -> DoubaoLLM:
+        """获取 LLM 实例"""
+        if model and model != self._llm.model:
+            logger.info(f"切换模型: {self._llm.model} -> {model}")
+            return DoubaoLLM(
+                api_key=settings.DOUBAO_API_KEY,
+                base_url=settings.DOUBAO_BASE_URL,
+                model=model
+            )
+        return self._llm
+
+    async def chat(
+        self,
+        messages: List[ChatMessage],
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
@@ -58,25 +172,9 @@ class LLMService:
         stream: bool = False,
         **kwargs
     ) -> ChatResponse:
-        """
-        非流式对话
-
-        Args:
-            messages: 消息列表
-            provider: 提供商名称
-            model: 模型名称
-            temperature: 温度参数
-            max_tokens: 最大 token 数
-            top_p: top_p 参数
-            stream: 是否流式
-            **kwargs: 其他参数
-
-        Returns:
-            ChatResponse
-        """
-        provider = provider or settings.DEFAULT_LLM_PROVIDER
-        logger.debug(f"调用大模型聊天 - 提供商: {provider}, 模型: {model or '默认'}, 消息数: {len(messages)}, 温度: {temperature}")
-        llm = self.get_llm(provider, model=model)
+        """非流式对话"""
+        logger.debug(f"调用豆包聊天 - 模型: {model or settings.DOUBAO_MODEL}, 消息数: {len(messages)}, 温度: {temperature}")
+        llm = self.get_llm(model)
         response = await llm.chat(
             messages=messages,
             temperature=temperature,
@@ -85,37 +183,21 @@ class LLMService:
             stream=stream,
             **kwargs
         )
-        logger.debug(f"大模型聊天响应接收 - 模型: {response.model}, 内容长度: {len(response.content)}")
+        logger.debug(f"豆包聊天响应接收 - 模型: {response.model}, 内容长度: {len(response.content)}")
         return response
 
     async def chat_stream(
         self,
         messages: List[ChatMessage],
-        provider: Optional[str] = None,
         model: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         top_p: float = 1.0,
         **kwargs
     ) -> AsyncGenerator[str, None]:
-        """
-        流式对话
-
-        Args:
-            messages: 消息列表
-            provider: 提供商名称
-            model: 模型名称
-            temperature: 温度参数
-            max_tokens: 最大 token 数
-            top_p: top_p 参数
-            **kwargs: 其他参数
-
-        Yields:
-            文本片段
-        """
-        provider = provider or settings.DEFAULT_LLM_PROVIDER
-        logger.debug(f"开始大模型流式聊天 - 提供商: {provider}, 模型: {model or '默认'}, 消息数: {len(messages)}, 温度: {temperature}")
-        llm = self.get_llm(provider, model=model)
+        """流式对话"""
+        logger.debug(f"开始豆包流式聊天 - 模型: {model or settings.DOUBAO_MODEL}, 消息数: {len(messages)}, 温度: {temperature}")
+        llm = self.get_llm(model)
         chunk_count = 0
         async for chunk in llm.chat_stream(
             messages=messages,
@@ -126,16 +208,11 @@ class LLMService:
         ):
             chunk_count += 1
             yield chunk
-        logger.debug(f"大模型流式聊天完成 - 总块数: {chunk_count}")
+        logger.debug(f"豆包流式聊天完成 - 总块数: {chunk_count}")
 
-    def list_available_providers(self) -> List[dict]:
-        """
-        列出所有可用的提供商
-
-        Returns:
-            提供商信息列表
-        """
-        return llm_factory.list_providers()
+    def list_available_models(self) -> List[str]:
+        """列出所有可用的模型"""
+        return DoubaoLLM.supported_models
 
 
 @lru_cache()
