@@ -74,25 +74,32 @@ REACT_SYSTEM_PROMPT = """你是一位专业的学术研究助手。你需要通�
 
 ## 工具使用提示
 
-- DocEditTool：如果用户选中了文档，优先使用选中的 doc_id
-- PaperDownloadTool：可以与 SearchTool 配合使用
-- MultiModalRAGTool：用于基于已有文档进行问答
-- SummarizeTool：用于总结内容
-- FilterTool：用于筛选搜索结果
-- CitationTool：用于生成引用
-- LLMCallTool：当需要「让大模型直接生成一段文字」（解释、扩写、翻译等）且无其他专用工具时使用
+{tool_usage_hints}
+
+## 工具使用示例
+
+{tool_examples}
+
 - **重要**：调用 SearchTool、FilterTool、SummarizeTool 等工具时，务必传递 user_id 参数
 """
 
 
-def get_react_system_prompt(tool_list: str, user_profile_info: str = "", user_id: str = "") -> str:
+def get_react_system_prompt(
+    tool_list: str, 
+    user_profile_info: str = "", 
+    user_id: str = "",
+    tool_usage_hints: str = "暂无特殊使用提示",
+    tool_examples: str = "暂无示例"
+) -> str:
     """获取 ReAct 模式的 system prompt"""
     if not user_profile_info:
         user_profile_info = "当前没有用户资料，将使用默认设置。"
     
     prompt = REACT_SYSTEM_PROMPT.format(
         tool_list=tool_list,
-        user_profile_info=user_profile_info
+        user_profile_info=user_profile_info,
+        tool_usage_hints=tool_usage_hints,
+        tool_examples=tool_examples
     )
     
     return prompt

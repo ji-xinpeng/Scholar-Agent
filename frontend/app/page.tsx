@@ -472,6 +472,13 @@ export default function ChatPage() {
             case "thinking":
               if (data.message) {
                 setAgentThought(data.message);
+                setAgentTimeline((prev) => {
+                  const last = prev[prev.length - 1];
+                  if (last?.type === "thought" && last.content === data.message) {
+                    return prev;
+                  }
+                  return [...prev, { type: "thought", content: data.message }];
+                });
               }
               break;
 
@@ -540,6 +547,12 @@ export default function ChatPage() {
                 setStepThoughts((prev) => ({ ...prev, [data.step_id]: data.thought_summary }));
               }
               setAgentTimeline((prev) => [...prev, { type: "step_done", stepId: data.step_id, result: data.thought_summary || "" }]);
+              
+              // 强制滚动到底部，确保最新步骤可见
+              setTimeout(() => {
+                 const element = document.getElementById(`step-${data.step_id}`);
+                 element?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+              }, 100);
               break;
 
             case "stream":

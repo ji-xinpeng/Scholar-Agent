@@ -7,6 +7,8 @@ class BaseTool(ABC):
     name: str = ""
     description: str = ""
     parameters: dict = {}
+    usage_hint: str = ""
+    examples: str = ""
 
     @abstractmethod
     async def run(self, **kwargs) -> Any:

@@ -8,6 +8,20 @@ class DocEditTool(BaseTool):
     """对文档进行增删改查操作"""
     name = "DocEditTool"
     description = "对文档进行读取、修改、追加、替换、新建或删除操作。仅支持 .docx/.doc、.md、.txt 格式。read/update/append/replace/delete 需要 doc_id（从用户选中列表取）；create 需要 filename，可同时设置 content 作为初始内容。"
+    usage_hint = """如果用户选中了文档，优先使用选中的 doc_id。
+    - 编辑文档前必须先用 read 操作读取完整内容
+    - 删除或修改段落时，old_text 要包含完整段落，不能只匹配一句话
+    - 删除内容时 new_text 设为空字符串，修改时 new_text 设为完整新内容"""
+    examples = """**示例：删除文档中的某一段**
+    <question>把文档中描述垂直场景应用研究这一段都删掉</question>
+    <thought>我需要先读取文档内容，找到要删除的段落，然后删除它。</thought>
+    <action>DocEditTool(action="read", doc_id="doc-123", user_id="user-123")</action>
+    <observation>{"success": true, "content": "### 学术文献综合总结\\n本次整理的10篇学术文献...\\n#### 二、垂直场景应用研究\\n1. 工业与数字孪生...\\n#### 整体趋势与说明..."}</observation>
+    <thought>我已经读取了文档内容，现在删除"垂直场景应用研究"这一整段。我会提供完整的段落内容作为 old_text，确保唯一匹配。</thought>
+    <action>DocEditTool(action="replace", doc_id="doc-123", old_text="#### 二、垂直场景应用研究\\n1. 工业与数字孪生：...", new_text="", user_id="user-123")</action>
+    <observation>{"success": true, "message": "内容已替换"}</observation>
+    <thought>段落已成功删除，任务完成。</thought>
+    <final_answer>已成功删除文档中描述垂直场景应用研究的段落。</final_answer>"""
     parameters = {
         "action": {
             "type": "string",

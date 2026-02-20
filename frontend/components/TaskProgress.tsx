@@ -246,17 +246,23 @@ export default function TaskProgress({ steps, stepThoughts = {}, timeline = [], 
               let stepIdx = 0;
               const thoughtEvents = timeline.filter((e) => e.type === "thought");
               const stepStartEvents = timeline.filter((e) => e.type === "step_start");
+              const seenThoughts = new Set<string>();
 
               // Build ordered items from timeline
               for (const event of timeline) {
                 if (event.type === "thought") {
-                  items.push(
-                    <div key={`t-${thoughtIdx}`} className="flex items-start gap-2 py-1.5">
-                      <MessageSquare className="w-3.5 h-3.5 text-violet-400 shrink-0 mt-0.5" />
-                      <p className="text-[12px] text-slate-500 leading-relaxed whitespace-pre-wrap">{event.content}</p>
-                    </div>
-                  );
-                  thoughtIdx++;
+                  const thoughtContent = event.content;
+                  // 跳过重复的 thought
+                  if (!seenThoughts.has(thoughtContent)) {
+                    seenThoughts.add(thoughtContent);
+                    items.push(
+                      <div key={`t-${thoughtIdx}`} className="flex items-start gap-2 py-1.5">
+                        <MessageSquare className="w-3.5 h-3.5 text-violet-400 shrink-0 mt-0.5" />
+                        <p className="text-[12px] text-slate-500 leading-relaxed whitespace-pre-wrap">{thoughtContent}</p>
+                      </div>
+                    );
+                    thoughtIdx++;
+                  }
                 }
                 if (event.type === "step_start") {
                   const step = steps.find((s) => s.id === event.stepId);

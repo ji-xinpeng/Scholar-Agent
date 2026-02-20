@@ -229,14 +229,53 @@ class DocumentService:
         return self.update_document_content(doc_id, new_content)
 
     def replace_document_content(self, doc_id: str, old_text: str, new_text: str) -> bool:
-        """替换文档中的指定文本"""
+        """
+        替换文档中的指定文本
+        支持多种匹配方式，提高成功率
+        """
         existing = self.get_document_content(doc_id)
         if existing is None:
+            logger.error(f"文档不存在: {doc_id}")
             return False
-        if old_text not in existing:
-            return False
-        new_content = existing.replace(old_text, new_text, 1)
-        return self.update_document_content(doc_id, new_content)
+
+        logger.debug(f"尝试替换文档内容")
+        logger.debug(f"old_text 长度: {len(old_text)}")
+        logger.debug(f"old_text 前200字符: {old_text[:200]}")
+        logger.debug(f"文档内容长度: {len(existing)}")
+
+        # 1. 精确匹配
+        if old_text in existing:
+            new_content = existing.replace(old_text, new_text, 1)
+            logger.info(f"精确匹配成功，正在更新文档")
+            return self.update_document_content(doc_id, new_content)
+
+        # 2. 尝试去除首尾空格匹配
+        old_text_stripped = old_text.strip()
+        if old_text_stripped and old_text_stripped in existing:
+            # 查找包含这个 stripped 文本的完整段落
+            lines = existing.split("\n")
+            found_idx = -1
+            for i, line in enumerate(lines):
+                if old_text_stripped in line:
+                    found_idx = i
+                    break
+            
+            if found_idx != -1:
+                # 尝试找到前后更多上下文进行匹配
+                start = max(0, found_idx - 5)
+                end = min(len(lines), found_idx + 6)
+                candidate = "\n".join(lines[start:end])
+                if old_text_stripped in candidate:
+                    logger.info(f"通过 stripped 文本 + 上下文匹配成功")
+                    new_content = existing.replace(candidate, new_text, 1)
+                    return self.update_document_content(doc_id, new_content)
+
+        # 3. 如果都匹配失败，记录详细日志
+        logger.warning(f"无法匹配要替换的文本")
+        logger.warning(f"old_text: {repr(old_text)}")
+        logger.warning(f"old_text_stripped: {repr(old_text_stripped)}")
+        
+        return False
 
     def update_document_content(self, doc_id: str, content: str) -> bool:
         """更新文档内容（支持 word、markdown、text 格式）"""

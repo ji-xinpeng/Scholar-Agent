@@ -42,7 +42,9 @@ class ToolHub:
             {
                 "name": t.name,
                 "description": t.description,
-                "parameters": t.parameters
+                "parameters": t.parameters,
+                "usage_hint": getattr(t, "usage_hint", ""),
+                "examples": getattr(t, "examples", "")
             } 
             for t in self._tools.values()
         ]
