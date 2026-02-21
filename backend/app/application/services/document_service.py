@@ -187,23 +187,31 @@ class DocumentService:
     def get_document_content(self, doc_id: str) -> Optional[str]:
         doc = self.get_document(doc_id)
         if not doc:
+            logger.warning(f"get_document_content: 文档不存在，doc_id={doc_id}")
             return None
         
         file_path = doc["file_path"]
         if not os.path.exists(file_path):
+            logger.warning(f"get_document_content: 文件不存在，file_path={file_path}")
             return None
         
         file_type = doc["file_type"]
         content = ""
         
         try:
+            logger.info(f"get_document_content: 开始读取，doc_id={doc_id}，file_type={file_type}")
             if file_type == "pdf":
                 with open(file_path, "rb") as f:
                     pdf_reader = PyPDF2.PdfReader(f)
-                    for page in pdf_reader.pages:
-                        text = page.extract_text()
-                        if text:
-                            content += text + "\n"
+                    logger.info(f"PDF 页数: {len(pdf_reader.pages)}")
+                    for i, page in enumerate(pdf_reader.pages):
+                        try:
+                            text = page.extract_text()
+                            if text:
+                                content += text + "\n"
+                        except Exception as e:
+                            logger.warning(f"PDF 第 {i+1} 页提取失败: {e}")
+                    logger.info(f"PDF 提取内容长度: {len(content)}")
             elif file_type == "word":
                 docx = Document(file_path)
                 for para in docx.paragraphs:
@@ -214,19 +222,26 @@ class DocumentService:
             else:
                 logger.warning(f"Unsupported file type: {file_type}")
                 return None
+            logger.info(f"get_document_content: 读取成功，内容长度={len(content)}")
         except Exception as e:
-            logger.error(f"Error reading document {doc_id}: {e}")
+            logger.error(f"Error reading document {doc_id}: {e}", exc_info=True)
             return None
         
         return content
 
     def append_document_content(self, doc_id: str, content_to_append: str) -> bool:
         """在文档末尾追加内容"""
+        logger.info(f"开始 append_document_content，doc_id={doc_id}，content_to_append 长度={len(content_to_append)}")
         existing = self.get_document_content(doc_id)
         if existing is None:
+            logger.warning(f"append_document_content: 无法获取现有内容，doc_id={doc_id}")
             return False
+        logger.info(f"append_document_content: 现有内容长度={len(existing)}")
         new_content = existing.rstrip("\n") + "\n" + content_to_append
-        return self.update_document_content(doc_id, new_content)
+        logger.info(f"append_document_content: 新内容长度={len(new_content)}")
+        result = self.update_document_content(doc_id, new_content)
+        logger.info(f"append_document_content: 更新结果={result}")
+        return result
 
     def replace_document_content(self, doc_id: str, old_text: str, new_text: str) -> bool:
         """
@@ -279,14 +294,18 @@ class DocumentService:
 
     def update_document_content(self, doc_id: str, content: str) -> bool:
         """更新文档内容（支持 word、markdown、text 格式）"""
+        logger.info(f"开始 update_document_content，doc_id={doc_id}，content 长度={len(content)}")
         doc = self.get_document(doc_id)
         if not doc:
+            logger.warning(f"update_document_content: 文档不存在，doc_id={doc_id}")
             return False
 
         file_path = doc["file_path"]
         file_type = doc["file_type"]
+        logger.info(f"update_document_content: file_path={file_path}，file_type={file_type}")
 
         if not os.path.exists(file_path):
+            logger.warning(f"update_document_content: 文件不存在，file_path={file_path}")
             return False
 
         try:
@@ -302,9 +321,10 @@ class DocumentService:
                 logger.warning(f"不支持编辑的文件类型: {file_type}")
                 return False
 
+            logger.info(f"update_document_content: 更新成功，doc_id={doc_id}")
             return True
         except Exception as e:
-            logger.error(f"更新文档 {doc_id} 失败: {e}")
+            logger.error(f"更新文档 {doc_id} 失败: {e}", exc_info=True)
             return False
 
     async def parse_document(self, doc_id: str) -> bool:

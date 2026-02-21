@@ -990,7 +990,7 @@ export default function ChatPage() {
               <div className="grid grid-cols-2 gap-3 max-w-xl">
                 {[
                   "大语言模型推理能力的最新进展有哪些？",
-                  "解释一下 Transformer 架构",
+                  "我想了解一下大模型的最新进展，找3篇和我研究方向最相关的论文，写一个综述到一个名为进展的文件中，然后把这3篇论文下载下来",
                   "比较 RAG 和微调方法的优劣",
                   "总结多模态 AI 的最新研究工作",
                 ].map((q) => (

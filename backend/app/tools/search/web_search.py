@@ -1,12 +1,13 @@
 from typing import Dict, Any
 from app.tools.base import BaseTool
-import requests
 import json
 import asyncio
+import aiohttp
 from typing import Optional, List
 from pydantic import BaseModel, Field
 from app.infrastructure.logging.config import logger
 from app.infrastructure.storage.redis import cache_manager
+from app.infrastructure.llm.service import llm_service, ChatMessage, MessageRole
 
 
 class ScholarResultItem(BaseModel):
@@ -35,6 +36,12 @@ class ScholarSearchResult(BaseModel):
     organic: List[ScholarQueryResult] = Field(default_factory=list)
 
 
+class OptimizedSearchQueries(BaseModel):
+    """优化后的搜索查询"""
+    original_query: str
+    optimized_queries: List[str] = Field(..., description="3-5个优化后的学术搜索查询，每个查询都是独立的关键词组合")
+
+
 class SearchManager:
     """
     搜索学术论文
@@ -49,25 +56,37 @@ class SearchManager:
 
 
     async def _scholar_search(self, query: str, page: int = 1) -> List[ScholarResultItem]:
-        """搜索学术论文"""
-        payload = json.dumps({
+        """异步搜索学术论文"""
+        payload = {
             "q": query,
             "page": page
-        })
-        response = requests.request("POST", self.scholar_url, headers=self.headers, data=payload)
-        result = response.json()
-        if not result["organic"]:
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.scholar_url,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=30
+                ) as response:
+                    result = await response.json()
+                    if not result.get("organic"):
+                        logger.info(f"Search query '{query}' 返回空结果")
+                        return []
+                    
+                    items = []
+                    for item in result["organic"]:
+                        try:
+                            scholar_item = ScholarResultItem(**item)
+                            items.append(scholar_item)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse item: {e}")
+                            continue
+                    logger.info(f"Search query '{query}' 找到 {len(items)} 篇论文")
+                    return items
+        except Exception as e:
+            logger.error(f"Search query '{query}' 失败: {e}", exc_info=True)
             return []
-        
-        items = []
-        for item in result["organic"]:
-            try:
-                scholar_item = ScholarResultItem(**item)
-                items.append(scholar_item)
-            except Exception as e:
-                logger.warning(f"Failed to parse item: {e}")
-                continue
-        return items
 
 
     async def search(self, search_queries: List[str], page: int = 1) -> ScholarSearchResult:
@@ -94,8 +113,45 @@ class SearchTool(BaseTool):
         "user_id": {"type": "string", "description": "用户ID，用于个性化搜索", "default": ""}
     }
 
+    async def _optimize_query(self, query: str, user_profile: Optional[Dict] = None) -> List[str]:
+        """使用 LLM 优化搜索查询"""
+        system_prompt = """你是一位学术搜索专家。请将用户的研究需求改写为 3-5 个不同的学术搜索查询。
+
+        要求：
+        1. 每个查询都是独立的关键词组合，用英文
+        2. 适合在 Google Scholar 等学术搜索引擎中搜索
+        3. 覆盖不同的表达方式和角度
+        4. 直接返回 JSON 格式，不要有其他文字
+        5. 每个查询简洁明了，不超过 10 个词
+
+        返回格式：
+        {
+        "original_query": "原始查询",
+        "optimized_queries": ["查询1", "查询2", "查询3", "查询4", "查询5"]
+        }"""    
+
+        user_prompt = f"原始查询: {query}"
+        if user_profile and user_profile.get("research_field"):
+            user_prompt += f"\n用户研究领域: {user_profile['research_field']}"
+        if user_profile and user_profile.get("knowledge_level"):
+            user_prompt += f"\n用户知识水平: {user_profile['knowledge_level']}"
+
+        try:
+            messages = [
+                ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
+                ChatMessage(role=MessageRole.USER, content=user_prompt)
+            ]
+            response = await llm_service.chat(messages, response_format=OptimizedSearchQueries, temperature=0.7)
+            if response.parsed:
+                logger.info(f"SearchTool 查询优化结果: {response.parsed.optimized_queries}")
+                return response.parsed.optimized_queries
+        except Exception as e:
+            logger.warning(f"SearchTool 查询优化失败: {e}")
+        
+        return [query]
+
     async def run(self, **kwargs) -> Dict[str, Any]:
-        """搜索学术论文（简化版）"""
+        """搜索学术论文（改进版，含查询优化）"""
         query = kwargs.get("query", kwargs.get("query") or "")
         max_results = kwargs.get("max_results", 10)
         year_range = kwargs.get("year_range", "")
@@ -111,33 +167,47 @@ class SearchTool(BaseTool):
             except Exception as e:
                 logger.warning(f"SearchTool 获取用户资料失败: {e}")
         
-        # 构建增强的查询
-        enhanced_query = query
-        if user_profile and user_profile.get("research_field"):
-            # 如果用户有研究领域，将其添加到搜索词中
-            research_field = user_profile["research_field"]
-            if research_field not in query:
-                enhanced_query = f"{query} {research_field}"
-                logger.info(f"SearchTool 使用增强查询: {enhanced_query}")
+        # 优化查询
+        optimized_queries = await self._optimize_query(query, user_profile)
+        logger.info(f"SearchTool 原始查询: {query}")
+        logger.info(f"SearchTool 优化后查询: {optimized_queries}")
         
         # 尝试从缓存获取
-        cache_key = f"search:{enhanced_query}:{max_results}:{year_range}:{user_id}"
+        cache_key = f"search:{query}:{max_results}:{year_range}:{user_id}"
         cached_result = cache_manager.get(cache_key)
         if cached_result is not None:
-            logger.info(f"SearchTool 缓存命中: {enhanced_query}")
+            logger.info(f"SearchTool 缓存命中: {query}")
             return cached_result
 
+        # 并行搜索所有优化后的查询
         search_manager = SearchManager()
-        search_results = await search_manager.search([enhanced_query], max_results)
-        papers = []
-        if search_results.organic:
-            papers = [paper.model_dump() for paper in search_results.organic[0].data]
+        search_results = await search_manager.search(optimized_queries, max_results)
+        
+        # 合并所有查询结果并去重（基于标题）
+        all_papers = []
+        seen_titles = set()
+        for query_result in search_results.organic:
+            for paper in query_result.data:
+                if paper.title and paper.title not in seen_titles:
+                    seen_titles.add(paper.title)
+                    all_papers.append(paper.model_dump())
+        
+        # 限制返回数量
+        papers = all_papers[:max_results]
+        
+        # 构建友好的展示信息
+        query_info = f"原始查询: {query}\n"
+        query_info += "优化后的搜索词:\n"
+        for i, q in enumerate(optimized_queries, 1):
+            query_info += f"  {i}. {q}\n"
         
         result = {
             "success": True,
             "papers": papers,
             "original_query": query,
-            "enhanced_query": enhanced_query,
+            "optimized_queries": optimized_queries,
+            "query_info": query_info,
+            "total_found": len(all_papers),
             "user_profile_used": user_profile is not None
         }
 

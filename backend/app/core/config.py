@@ -29,17 +29,18 @@ class Settings(BaseSettings):
     # 豆包 (Doubao) - 火山引擎
     DOUBAO_API_KEY: str = "2192cc18-ff14-41bd-a711-f4d35a85bc59"  # 已配置的 API Key
     DOUBAO_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
-    DOUBAO_MODEL: str = "doubao-seed-2-0-mini-260215"
+    DOUBAO_MODEL: str = "doubao-seed-1-8-251228"
+    DOUBAO_BEST_MODEL: str = "doubao-seed-2-0-pro-260215"
 
     # 根据意图选择模型配置 - 豆包
     # 简单对话使用更便宜的模型
-    SIMPLE_CHAT_MODEL: str = "doubao-seed-2-0-mini-260215"  # 豆包的经济模型
+    SIMPLE_CHAT_MODEL: str = "doubao-seed-1-6-251015"  # 豆包的经济模型
     
     # 论文问答使用适中的模型
-    PAPER_QA_MODEL: str = "doubao-seed-2-0-lite-260215"
+    PAPER_QA_MODEL: str = "doubao-seed-1-8-251228"
     
     # 智能体模式使用更强的模型
-    AGENT_MODEL: str = "doubao-seed-2-0-pro-260215"  # 豆包的高级模型
+    AGENT_MODEL: str = "doubao-seed-1-8-251228" 
     
     class Config:
         case_sensitive = True

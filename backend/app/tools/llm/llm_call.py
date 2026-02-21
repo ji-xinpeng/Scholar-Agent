@@ -7,6 +7,7 @@ from app.tools.base import BaseTool
 from app.infrastructure.llm.service import MessageRole, ChatMessage, llm_service
 from app.infrastructure.logging.config import logger
 from app.application.agent.persona import PERSONA_PROMPT
+from app.core.config import settings
 
 
 class LLMCallTool(BaseTool):
@@ -46,7 +47,7 @@ class LLMCallTool(BaseTool):
             chat_kwargs = {"temperature": temperature}
             if max_tokens is not None:
                 chat_kwargs["max_tokens"] = max_tokens
-            response = await llm_service.chat(messages, **chat_kwargs)
+            response = await llm_service.chat(messages, model=settings.DOUBAO_BEST_MODEL, **chat_kwargs)
             content = (response.content or "").strip()
             logger.info(f"LLMCallTool 生成长度: {len(content)}")
             return {

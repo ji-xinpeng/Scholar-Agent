@@ -1,8 +1,8 @@
 import json
-import re
-import ast
+import asyncio
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Dict, Any, List, Tuple, Optional
+from pydantic import BaseModel, Field
 
 from app.infrastructure.logging.config import logger
 from app.infrastructure.llm.service import MessageRole, ChatMessage, llm_service
@@ -16,15 +16,25 @@ from app.application.agent.intent_prompts import get_intent_prompt
 from app.core.config import settings
 
 
+class ReActAction(BaseModel):
+    """ReAct 行动模型"""
+    action_type: str = Field(..., description="行动类型：tool_call 或 final_answer")
+    tool_name: Optional[str] = Field(None, description="工具名称（当 action_type=tool_call 时必填")
+    tool_params: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    final_answer: Optional[str] = Field(None, description="最终答案（当 action_type=final_answer 时必填")
+
+
+class ReActOutput(BaseModel):
+    """ReAct 输出模型"""
+    thought: str = Field(..., description="思考过程")
+    action: ReActAction = Field(..., description="行动")
+
+
 class AgentOrchestrator:
     """
     Agent 编排引擎
     支持三种模式：普通聊天、论文问答、智能体 (ReAct)
     """
-
-    # =========================================================================
-    # 公共入口方法
-    # =========================================================================
 
     async def run_unified_chat(
         self,
@@ -56,14 +66,13 @@ class AgentOrchestrator:
             task_type = intent_result.task_type
             logger.info(f"意图识别结果: intent={intent}, task_type={task_type}, Query: {user_query}")
 
-            # 根据任务类型追加意图相关 prompt，使回答更贴合用户需求
             intent_prompt = get_intent_prompt(task_type)
             combined_system_prompt = (intent_prompt + "\n\n" + system_prompt) if (intent_prompt and system_prompt) else (intent_prompt or system_prompt)
 
             final_model = llm_model or self._get_model_for_intent(intent)
             logger.info(f"意图: {intent}, task_type: {task_type}, 使用模型: {final_model}")
 
-            if intent == ChatIntent.PAPER_QA:
+            if intent.value == ChatIntent.PAPER_QA.value:
                 yield self._sse("thinking", {"message": "已切换至文档问答模式"})
                 async for chunk in self.run_paper_qa_chat(
                     session_id, user_id, user_query, selected_doc_ids, combined_system_prompt,
@@ -72,7 +81,7 @@ class AgentOrchestrator:
                 ):
                     yield chunk
 
-            elif intent == ChatIntent.AGENT:
+            elif intent.value == ChatIntent.AGENT.value:
                 yield self._sse("thinking", {"message": "任务较复杂，已切换至智能体模式"})
                 async for chunk in self.run_agent_chat(
                     session_id, user_id, user_query, selected_doc_ids, combined_system_prompt,
@@ -94,10 +103,6 @@ class AgentOrchestrator:
             logger.error(f"统一对话模式错误: {e}", exc_info=True)
             yield self._sse("error", {"message": str(e)})
             yield self._sse("done", {})
-
-    # =========================================================================
-    # 三种聊天模式
-    # =========================================================================
 
     async def run_normal_chat(
         self,
@@ -198,11 +203,11 @@ class AgentOrchestrator:
         llm_temperature: float = None,
         llm_max_tokens: int = None,
         llm_top_p: float = None,
-        max_iterations: int = 10,
+        max_iterations: int = 20,
         **llm_kwargs
     ) -> AsyncGenerator[str, None]:
         """
-        ReAct 模式：思考-行动-观察循环
+        ReAct 模式：思考-行动-观察循环（使用结构化输出）
         1. 思考 (Thought)
         2. 行动 (Action)
         3. 观察 (Observation)
@@ -226,74 +231,39 @@ class AgentOrchestrator:
                     llm_model, llm_temperature, llm_max_tokens, llm_top_p, llm_kwargs
                 )
 
-                full_content = ""
-                current_thought = ""
-                last_fa_len = 0
-                thought_complete = False
-                iteration_done = False
+                response = await llm_service.chat(messages, response_format=ReActOutput, **chat_kwargs)
+                parsed = response.parsed
 
-                async for chunk in llm_service.chat_stream(messages, **chat_kwargs):
-                    full_content += chunk
-
-                    if not thought_complete:
-                        thought_match = re.search(r'<thought>(.*?)</thought>', full_content, re.DOTALL)
-                        if thought_match:
-                            thought_text = thought_match.group(1).strip()
-                            if thought_text and thought_text != current_thought:
-                                current_thought = thought_text
-                                thought_complete = True
-                                yield self._sse("thinking", {"message": current_thought})
-
-                    action_match = re.search(r'<action>(.*?)</action>', full_content, re.DOTALL)
-                    if action_match:
-                        iteration_done = True
-                        break
-
-                    fa_match = re.search(r'<final_answer>(.*?)(?:</final_answer>|$)', full_content, re.DOTALL)
-                    if fa_match:
-                        fa_text = fa_match.group(1)
-                        if len(fa_text) > last_fa_len:
-                            delta = fa_text[last_fa_len:]
-                            last_fa_len = len(fa_text)
-
-                            if last_fa_len - len(delta) == 0:
-                                for s in state["plan_steps"]:
-                                    if s.get("status") == "pending":
-                                        s["status"] = "done"
-                                yield self._sse("plan", {"plan": state["plan_steps"], "thought": state["agent_thought"]})
-
-                            yield self._sse("stream", {"content": delta})
-
-                logger.debug(f"LLM 响应 (Streamed): {full_content[:500]}")
-
-                if not full_content:
+                if not parsed:
+                    logger.warning("结构化解析失败")
                     break
 
-                messages.append(ChatMessage(role=MessageRole.ASSISTANT, content=full_content))
+                thought = parsed.thought
+                action = parsed.action
 
-                thought = self._extract_xml_tag(full_content, "thought")
-                if thought:
-                    state["agent_thought"] = thought
-                    state["timeline"].append({"type": "thought", "content": thought})
-                    logger.info(f"Thought: {thought}")
+                state["agent_thought"] = thought
+                state["timeline"].append({"type": "thought", "content": thought})
+                logger.info(f"Thought: {thought}")
+                yield self._sse("thinking", {"message": thought})
 
-                final_answer = self._extract_xml_tag(full_content, "final_answer")
-                if final_answer:
+                if action.action_type == "final_answer" and action.final_answer:
+                    final_answer = action.final_answer
                     async for chunk in self._finish_agent_chat(
                         session_id, final_answer, state
                     ):
                         yield chunk
                     return
 
-                action_str = self._extract_xml_tag(full_content, "action")
-                if action_str:
+                elif action.action_type == "tool_call" and action.tool_name:
+                    tool_name = action.tool_name
+                    tool_params = action.tool_params or {}
                     async for chunk in self._execute_tool_action(
-                        action_str, session_id, user_id, selected_doc_ids,
+                        tool_name, tool_params, session_id, user_id, selected_doc_ids,
                         messages, state
                     ):
                         yield chunk
                 else:
-                    logger.warning(f"未找到 action 或 final_answer: {full_content}")
+                    logger.warning(f"未知的 action_type: {action.action_type}")
                     break
 
             logger.warning(f"达到最大迭代次数 {max_iterations}")
@@ -304,10 +274,6 @@ class AgentOrchestrator:
             logger.error(f"ReAct 模式错误: {e}", exc_info=True)
             yield self._sse("error", {"message": str(e)})
             yield self._sse("done", {})
-
-    # =========================================================================
-    # Agent 模式的辅助方法
-    # =========================================================================
 
     async def _init_agent_messages(
         self, user_query: str, selected_doc_ids: list, user_id: str, image_data: str = None
@@ -324,7 +290,7 @@ class AgentOrchestrator:
             tool_usage_hints=tool_usage_hints, tool_examples=tool_examples
         )
 
-        user_content = f"<question>{user_query}</question>"
+        user_content = f"用户查询: {user_query}"
         if image_data:
             user_content = [
                 {"type": "image_url", "image_url": {"url": image_data}},
@@ -353,33 +319,31 @@ class AgentOrchestrator:
         }
 
     async def _execute_tool_action(
-        self, action_str: str, session_id: str, user_id: str,
+        self, tool_name: str, tool_params: Dict, session_id: str, user_id: str,
         selected_doc_ids: list, messages: List[ChatMessage], state: Dict
     ):
         """执行工具 Action"""
-        logger.info(f"Action: {action_str}")
+        logger.info(f"Action: {tool_name}({tool_params})")
         try:
-            tool_name, params = self._parse_react_action(action_str)
-
-            params = self._resolve_tool_params(
-                tool_name, params, selected_doc_ids, user_id, state["previous_results"]
+            tool_params = self._resolve_tool_params(
+                tool_name, tool_params, selected_doc_ids, user_id, state["previous_results"]
             )
 
             step_id = str(len(state["plan_steps"]))
-            action_label = self._get_action_label(tool_name, params)
+            action_label = self._get_action_label(tool_name, tool_params)
             state["plan_steps"].append({
                 "id": step_id,
                 "action": action_label,
                 "tool_name": tool_name,
-                "params": params,
+                "params": tool_params,
                 "status": "running"
             })
 
             yield self._sse("plan", {"plan": state["plan_steps"], "thought": state["agent_thought"]})
             state["timeline"].append({"type": "step_start", "stepId": step_id, "toolName": tool_name, "action": action_label})
-            yield self._sse("step_start", {"step_id": step_id, "action": action_label, "tool_name": tool_name, "params": params})
+            yield self._sse("step_start", {"step_id": step_id, "action": action_label, "tool_name": tool_name, "params": tool_params})
 
-            tool_result = await toolhub.run_tool(tool_name, **params)
+            tool_result = await toolhub.run_tool(tool_name, **tool_params)
             logger.info(f"{tool_name} 执行结果: {tool_result}")
             state["results"][tool_name] = tool_result
             state["previous_results"][tool_name] = tool_result
@@ -396,20 +360,19 @@ class AgentOrchestrator:
                 "result": tool_result,
                 "thought_summary": thought_summary,
                 "tool_name": tool_name,
-                "params": params
+                "params": tool_params
             })
-            # 避免用户误以为已结束：提示智能体仍在运行，后续还有步骤或最终回答
             yield self._sse("agent_continuing", {"message": "本步骤已完成，正在准备下一步…"})
 
             async for chunk in self._handle_special_tool_result(tool_name, tool_result):
                 yield chunk
 
-            obs_msg = f"<observation>{json.dumps(tool_result, ensure_ascii=False)}</observation>"
+            obs_msg = f"观察结果: {json.dumps(tool_result, ensure_ascii=False)}"
             messages.append(ChatMessage(role=MessageRole.USER, content=obs_msg))
 
         except Exception as e:
             logger.error(f"执行工具失败: {e}", exc_info=True)
-            error_msg = f"<observation>工具执行错误: {str(e)}</observation>"
+            error_msg = f"工具执行错误: {str(e)}"
             messages.append(ChatMessage(role=MessageRole.USER, content=error_msg))
 
     async def _finish_agent_chat(
@@ -417,6 +380,16 @@ class AgentOrchestrator:
     ):
         """完成 Agent 对话"""
         logger.info(f"Final Answer: {final_answer[:200]}")
+
+        for s in state["plan_steps"]:
+            if s.get("status") in ("pending", "running"):
+                s["status"] = "done"
+        yield self._sse("plan", {"plan": state["plan_steps"], "thought": state["agent_thought"]})
+
+        for i in range(0, len(final_answer), 3):
+            chunk = final_answer[i:i+3]
+            yield self._sse("stream", {"content": chunk})
+            await asyncio.sleep(0.02)
 
         msg_metadata = {
             "tools_used": list(state["results"].keys()),
@@ -430,10 +403,6 @@ class AgentOrchestrator:
         )
         yield self._sse("assistant_message", assistant_msg)
         yield self._sse("done", {})
-
-    # =========================================================================
-    # 通用辅助方法
-    # =========================================================================
 
     def _sse(self, event_type: str, data: dict) -> str:
         """构建 SSE 事件"""
@@ -461,7 +430,6 @@ class AgentOrchestrator:
             try:
                 role = MessageRole(msg["role"])
                 content = msg["content"]
-                # 当前轮次用户消息且带图：构造 vision 格式 [image_url, text]
                 if (
                     current_turn_image
                     and role == MessageRole.USER
@@ -553,7 +521,7 @@ class AgentOrchestrator:
 
         full_response = answer
         if sources:
-            full_response += f"\n\n---\n\n**参考文档 ({documents_used} 篇):**\n"
+            full_response += f"\n\n---\n\n**参考文档 ({documents_used} 篇):\n"
             for i, source in enumerate(sources, 1):
                 full_response += f"{i}. {source}\n"
         return full_response
@@ -565,7 +533,7 @@ class AgentOrchestrator:
         """解析和补充工具参数"""
         if selected_doc_ids and tool_name == "DocEditTool" and "doc_id" not in params:
             params["doc_id"] = selected_doc_ids[0]
-        if user_id and tool_name in ("DocEditTool", "PaperDownloadTool", "MultiModalRAGTool", "SearchTool", "FilterTool", "SummarizeTool", "ProfileTool"):
+        if user_id:
             params["user_id"] = user_id
 
         tool_meta = toolhub.get_tool(tool_name)
@@ -603,98 +571,6 @@ class AgentOrchestrator:
         assistant_msg = session_service.add_message(session_id, "assistant", content, msg_type="text")
         yield self._sse("assistant_message", assistant_msg)
 
-    # =========================================================================
-    # 解析工具方法
-    # =========================================================================
-
-    def _extract_xml_tag(self, text: str, tag: str) -> str:
-        """从文本中提取 XML 标签内容"""
-        pattern = rf'<{tag}>(.*?)</{tag}>'
-        match = re.search(pattern, text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return ""
-
-    def _parse_react_action(self, action_str: str) -> Tuple[str, Dict[str, Any]]:
-        """解析 ReAct 的 action 字符串，返回工具名和参数字典"""
-        match = re.match(r'(\w+)\((.*)\)', action_str.strip(), re.DOTALL)
-        if not match:
-            raise ValueError(f"无法解析 action: {action_str}")
-
-        func_name = match.group(1)
-        args_str = match.group(2).strip()
-
-        if not args_str:
-            return func_name, {}
-
-        return func_name, self._parse_action_params(args_str)
-
-    def _parse_action_params(self, args_str: str) -> Dict[str, Any]:
-        """解析 action 参数字符串"""
-        params = {}
-        current_arg = ""
-        in_string = False
-        string_char = None
-        i = 0
-        paren_depth = 0
-
-        while i < len(args_str):
-            char = args_str[i]
-
-            if not in_string:
-                if char in ['"', "'"]:
-                    in_string = True
-                    string_char = char
-                    current_arg += char
-                elif char == '(':
-                    paren_depth += 1
-                    current_arg += char
-                elif char == ')':
-                    paren_depth -= 1
-                    current_arg += char
-                elif char == ',' and paren_depth == 0:
-                    if current_arg.strip():
-                        key, value = self._parse_single_param(current_arg.strip())
-                        params[key] = value
-                    current_arg = ""
-                else:
-                    current_arg += char
-            else:
-                current_arg += char
-                if char == string_char and (i == 0 or args_str[i-1] != '\\'):
-                    in_string = False
-                    string_char = None
-
-            i += 1
-
-        if current_arg.strip():
-            key, value = self._parse_single_param(current_arg.strip())
-            params[key] = value
-
-        return params
-
-    def _parse_single_param(self, arg_str: str) -> Tuple[str, Any]:
-        """解析单个参数，如 key=value"""
-        if '=' not in arg_str:
-            return arg_str.strip(), True
-
-        key, value_str = arg_str.split('=', 1)
-        key = key.strip()
-        value_str = value_str.strip()
-
-        if (value_str.startswith('"') and value_str.endswith('"')) or \
-           (value_str.startswith("'") and value_str.endswith("'")):
-            inner_str = value_str[1:-1]
-            inner_str = inner_str.replace('\\"', '"').replace("\\'", "'")
-            inner_str = inner_str.replace('\\n', '\n').replace('\\t', '\t')
-            inner_str = inner_str.replace('\\r', '\r').replace('\\\\', '\\')
-            return key, inner_str
-
-        try:
-            return key, ast.literal_eval(value_str)
-        except (SyntaxError, ValueError):
-            return key, value_str
-
     def _get_action_label(self, tool_name: str, params: dict) -> str:
         """获取工具执行的描述标签"""
         meta = toolhub.get_tool(tool_name)
@@ -708,6 +584,12 @@ class AgentOrchestrator:
             return str(result)[:100]
         if not result.get("success"):
             return (result.get("error") or result.get("message") or "执行完成。")[:80]
+        
+        if tool_name == "SearchTool" and result.get("query_info"):
+            query_info = result.get("query_info", "")
+            total_found = result.get("total_found", 0)
+            return f"{query_info}\n共找到 {total_found} 篇相关论文。"
+        
         for key in ("message", "summary", "answer"):
             val = result.get(key)
             if val is not None and isinstance(val, str) and val.strip():

@@ -1,8 +1,9 @@
-from typing import List, Optional, AsyncGenerator, Union
+from typing import List, Optional, AsyncGenerator, Union, Type, Any
 from functools import lru_cache
 from openai import AsyncOpenAI
 from dataclasses import dataclass, field
 from enum import Enum
+from pydantic import BaseModel
 
 from app.core.config import settings
 from app.infrastructure.logging.config import logger
@@ -30,18 +31,19 @@ class ChatResponse:
     model: str
     usage: dict = field(default_factory=dict)
     finish_reason: Optional[str] = None
-    raw_response: Optional[any] = None
+    raw_response: Optional[Any] = None
+    parsed: Optional[BaseModel] = None
 
 
 class DoubaoLLM:
     """豆包大模型"""
 
     name = "doubao"
-    default_model = "doubao-seed-2-0-mini-260215"
+    default_model = "doubao-seed-1-8-251228"
     supported_models = [
         "doubao-seedream-4-5-251128",
-        "doubao-seed-2-0-mini-260215",
-        "doubao-seed-2-0-lite-260215",
+        "doubao-seed-1-8-251228",
+        "doubao-seed-1-6-251015",
         "doubao-seed-2-0-pro-260215",
         "doubao-seed-2-0-code-preview-260215",
         "doubao-embedding-large-text-250515",
@@ -81,26 +83,48 @@ class DoubaoLLM:
         max_tokens: Optional[int] = None,
         top_p: float = 1.0,
         stream: bool = False,
+        response_format: Optional[Type[BaseModel]] = None,
         **kwargs
     ) -> ChatResponse:
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=self._convert_messages(messages),
-                temperature=temperature,
-                top_p=top_p,
-                max_tokens=max_tokens,
-                stream=stream
-            )
+            create_kwargs = {
+                "model": self.model,
+                "messages": self._convert_messages(messages),
+                "temperature": temperature,
+                "top_p": top_p,
+                "max_tokens": max_tokens,
+                "stream": stream
+            }
+            
+            if response_format:
+                create_kwargs["response_format"] = response_format
+            
+            if "extra_body" in kwargs:
+                create_kwargs["extra_body"] = kwargs["extra_body"]
 
-            choice = response.choices[0]
-            return ChatResponse(
-                content=choice.message.content,
-                model=self.model,
-                usage=response.usage.model_dump() if response.usage else {},
-                finish_reason=choice.finish_reason,
-                raw_response=response.model_dump()
-            )
+            if response_format and not stream:
+                parse_kwargs = create_kwargs.copy()
+                parse_kwargs.pop("stream", None)
+                response = await self.client.chat.completions.parse(**parse_kwargs)
+                choice = response.choices[0]
+                return ChatResponse(
+                    content=choice.message.content or "",
+                    model=self.model,
+                    usage=response.usage.model_dump() if response.usage else {},
+                    finish_reason=choice.finish_reason,
+                    raw_response=response.model_dump(),
+                    parsed=choice.message.parsed
+                )
+            else:
+                response = await self.client.chat.completions.create(**create_kwargs)
+                choice = response.choices[0]
+                return ChatResponse(
+                    content=choice.message.content,
+                    model=self.model,
+                    usage=response.usage.model_dump() if response.usage else {},
+                    finish_reason=choice.finish_reason,
+                    raw_response=response.model_dump()
+                )
         except Exception as e:
             logger.error(f"DoubaoLLM chat 调用失败: {e}", exc_info=True)
             raise
@@ -171,6 +195,7 @@ class LLMService:
         max_tokens: Optional[int] = None,
         top_p: float = 1.0,
         stream: bool = False,
+        response_format: Optional[Type[BaseModel]] = None,
         **kwargs
     ) -> ChatResponse:
         """非流式对话"""
@@ -182,6 +207,7 @@ class LLMService:
             max_tokens=max_tokens,
             top_p=top_p,
             stream=stream,
+            response_format=response_format,
             **kwargs
         )
         logger.debug(f"豆包聊天响应接收 - 模型: {response.model}, 内容长度: {len(response.content)}")

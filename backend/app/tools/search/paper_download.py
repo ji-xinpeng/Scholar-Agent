@@ -2,10 +2,10 @@ from typing import Dict, Any, List
 from app.tools.base import BaseTool
 from app.application.services.document_service import document_service
 from app.infrastructure.logging.config import logger
-import requests
 import asyncio
 import random
 import re
+import aiohttp
 from app.core.config import settings
 
 
@@ -89,25 +89,35 @@ class PaperDownloadTool(BaseTool):
                         "message": "使用缓存，未重新下载"
                     }
                 
-                logger.info(f"正在下载: {title}")
+                logger.info(f"正在下载: {title} (超时: 30秒)")
                 
                 headers = self._get_headers()
                 
-                response = requests.get(
-                    pdf_url, 
-                    timeout=30, 
-                    headers=headers,
-                    allow_redirects=True,
-                    verify=False
-                )
-                response.raise_for_status()
+                async with aiohttp.ClientSession() as session:
+                    try:
+                        async with session.get(
+                            pdf_url,
+                            headers=headers,
+                            allow_redirects=True,
+                            timeout=aiohttp.ClientTimeout(total=30),
+                            ssl=False
+                        ) as response:
+                            response.raise_for_status()
+                            
+                            content_type = response.headers.get("content-type", "")
+                            if "pdf" not in content_type.lower():
+                                logger.warning(f"响应类型不是 PDF: {content_type}, 但将尝试使用")
+                            
+                            pdf_content = await response.read()
+                    except asyncio.TimeoutError:
+                        logger.error(f"下载超时（30秒）: {title}")
+                        return {
+                            "success": False,
+                            "title": title,
+                            "pdf_url": pdf_url,
+                            "error": "下载超时（超过30秒）"
+                        }
                 
-                content_type = response.headers.get("content-type", "")
-                if "pdf" not in content_type.lower() and len(response.content) > 0:
-                    logger.warning(f"响应类型不是 PDF: {content_type}, 但将尝试使用")
-                
-                pdf_content = response.content
-
                 doc = document_service.upload_document(
                     user_id=user_id,
                     filename=filename,
@@ -127,7 +137,7 @@ class PaperDownloadTool(BaseTool):
                     "file_size": doc.get("file_size", 0)
                 }
 
-            except requests.exceptions.RequestException as e:
+            except aiohttp.ClientError as e:
                 logger.error(f"下载失败: {title}, 错误: {e}")
                 return {
                     "success": False,
@@ -193,11 +203,20 @@ class PaperDownloadTool(BaseTool):
                     "error": result.get("error", "未知错误")
                 })
 
+        message = f"下载完成：成功 {len(downloaded_docs)} 篇，失败 {len(failed_downloads)} 篇"
+        if failed_downloads:
+            message += "\n\n下载失败的论文链接：\n"
+            for fail in failed_downloads:
+                pdf_url = fail.get("pdf_url", "")
+                title = fail.get("title", "未知标题")
+                error = fail.get("error", "未知错误")
+                message += f"\n- {title}\n  链接: {pdf_url}\n  错误: {error}\n"
+        
         return {
             "success": True,
             "downloaded_docs": downloaded_docs,
             "failed_downloads": failed_downloads,
             "total_downloaded": len(downloaded_docs),
             "total_failed": len(failed_downloads),
-            "message": f"下载完成：成功 {len(downloaded_docs)} 篇，失败 {len(failed_downloads)} 篇"
+            "message": message
         }
