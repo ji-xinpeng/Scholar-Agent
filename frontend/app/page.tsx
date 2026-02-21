@@ -51,6 +51,7 @@ export default function ChatPage() {
   const [stepThoughts, setStepThoughts] = useState<Record<string, string>>({});
   const [showTaskSteps, setShowTaskSteps] = useState(false);
   const [agentTimeline, setAgentTimeline] = useState<AgentTimelineEvent[]>([]);
+  const [agentContinuingMessage, setAgentContinuingMessage] = useState<string>("");
   const [streamingContent, setStreamingContent] = useState("");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -434,6 +435,7 @@ export default function ChatPage() {
     if (!text && !imagePreview && attachments.length === 0) return;
     if (isLoading) return;
 
+    const imageToSend = imagePreview || null;
     const userMsg: Msg = { 
       role: "user", 
       content: text || "[图片]", 
@@ -512,6 +514,7 @@ export default function ChatPage() {
               break;
 
             case "step_start":
+              setAgentContinuingMessage("");
               setTaskSteps((prev) =>
                 prev.map((s) =>
                   s.id === data.step_id ? { ...s, status: "running" as const, message: "", tool_name: data.tool_name, params: data.params } : s
@@ -555,7 +558,12 @@ export default function ChatPage() {
               }, 100);
               break;
 
+            case "agent_continuing":
+              setAgentContinuingMessage(data.message || "正在准备下一步…");
+              break;
+
             case "stream":
+              setAgentContinuingMessage("");
               accumulated += data.content || "";
               setStreamingContent(accumulated);
               break;
@@ -577,6 +585,7 @@ export default function ChatPage() {
               break;
 
             case "done":
+              setAgentContinuingMessage("");
               break;
           }
         },
@@ -604,6 +613,7 @@ export default function ChatPage() {
             }]);
           }
           setStreamingContent("");
+          setAgentContinuingMessage("");
           setIsLoading(false);
           setAbortController(null);
           setSelectedDocumentIds([]);
@@ -616,6 +626,7 @@ export default function ChatPage() {
           return ids.size > 0 ? Array.from(ids) : undefined;
         })(),
         controller.signal,
+        imageToSend,
       );
 
       if (returnedId && !sessionId) {
@@ -1031,7 +1042,7 @@ export default function ChatPage() {
                 <div className="space-y-3">
                   {showTaskSteps && (agentTimeline.length > 0 || taskSteps.length > 0) && (
                     <div className="ml-12">
-                      <TaskProgress steps={taskSteps} stepThoughts={stepThoughts} timeline={agentTimeline} />
+                      <TaskProgress steps={taskSteps} stepThoughts={stepThoughts} timeline={agentTimeline} continuingMessage={agentContinuingMessage} />
                     </div>
                   )}
                   <ChatMessage role="assistant" content={streamingContent} isStreaming onDocRefClick={handleDocRefClick} />
@@ -1040,7 +1051,7 @@ export default function ChatPage() {
 
               {isLoading && !streamingContent && agentTimeline.length > 0 && (
                 <div className="ml-12">
-                  <TaskProgress steps={taskSteps} stepThoughts={stepThoughts} timeline={agentTimeline} />
+                  <TaskProgress steps={taskSteps} stepThoughts={stepThoughts} timeline={agentTimeline} continuingMessage={agentContinuingMessage} />
                 </div>
               )}
 

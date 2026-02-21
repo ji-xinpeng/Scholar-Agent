@@ -33,6 +33,7 @@ class AgentOrchestrator:
         user_query: str,
         selected_doc_ids: list = None,
         system_prompt: str = None,
+        image_data: str = None,
         llm_provider: str = None,
         llm_model: str = None,
         llm_temperature: float = None,
@@ -66,7 +67,8 @@ class AgentOrchestrator:
                 yield self._sse("thinking", {"message": "已切换至文档问答模式"})
                 async for chunk in self.run_paper_qa_chat(
                     session_id, user_id, user_query, selected_doc_ids, combined_system_prompt,
-                    final_model, llm_temperature, llm_max_tokens, llm_top_p, **llm_kwargs
+                    image_data=image_data,
+                    llm_model=final_model, llm_temperature=llm_temperature, llm_max_tokens=llm_max_tokens, llm_top_p=llm_top_p, **llm_kwargs
                 ):
                     yield chunk
 
@@ -74,7 +76,8 @@ class AgentOrchestrator:
                 yield self._sse("thinking", {"message": "任务较复杂，已切换至智能体模式"})
                 async for chunk in self.run_agent_chat(
                     session_id, user_id, user_query, selected_doc_ids, combined_system_prompt,
-                    final_model, llm_temperature, llm_max_tokens, llm_top_p, **llm_kwargs
+                    image_data=image_data,
+                    llm_model=final_model, llm_temperature=llm_temperature, llm_max_tokens=llm_max_tokens, llm_top_p=llm_top_p, **llm_kwargs
                 ):
                     yield chunk
 
@@ -82,6 +85,7 @@ class AgentOrchestrator:
                 logger.info(f"简单对话，使用经济模型: {final_model}")
                 async for chunk in self.run_normal_chat(
                     session_id, user_id, user_query, selected_doc_ids, combined_system_prompt,
+                    image_data=image_data,
                     enable_search=False, model=final_model
                 ):
                     yield chunk
@@ -102,16 +106,17 @@ class AgentOrchestrator:
         user_query: str,
         selected_doc_ids: list = None,
         system_prompt: str = None,
+        image_data: str = None,
         enable_search: bool = True,
         model: str = None
     ) -> AsyncGenerator[str, None]:
-        """普通聊天模式：直接与 LLM 对话"""
+        """普通聊天模式：直接与 LLM 对话（支持当前轮次带图）"""
         try:
             async for chunk in self._add_user_message(session_id, user_query, selected_doc_ids):
                 yield chunk
 
             history = session_service.get_messages(session_id)
-            messages = self._build_chat_messages(history, system_prompt)
+            messages = self._build_chat_messages(history, system_prompt, current_turn_image=image_data)
 
             yield self._sse("thinking", {"message": "正在思考..."})
 
@@ -136,6 +141,7 @@ class AgentOrchestrator:
         user_query: str,
         selected_doc_ids: list = None,
         system_prompt: str = None,
+        image_data: str = None,
         llm_model: str = None,
         llm_temperature: float = None,
         llm_max_tokens: int = None,
@@ -187,6 +193,7 @@ class AgentOrchestrator:
         user_query: str,
         selected_doc_ids: list = None,
         system_prompt: str = None,
+        image_data: str = None,
         llm_model: str = None,
         llm_temperature: float = None,
         llm_max_tokens: int = None,
@@ -206,7 +213,7 @@ class AgentOrchestrator:
                 yield chunk
 
             messages = await self._init_agent_messages(
-                user_query, selected_doc_ids, user_id
+                user_query, selected_doc_ids, user_id, image_data=image_data
             )
 
             state = self._init_agent_state()
@@ -303,9 +310,9 @@ class AgentOrchestrator:
     # =========================================================================
 
     async def _init_agent_messages(
-        self, user_query: str, selected_doc_ids: list, user_id: str
+        self, user_query: str, selected_doc_ids: list, user_id: str, image_data: str = None
     ) -> List[ChatMessage]:
-        """初始化 Agent 的消息列表"""
+        """初始化 Agent 的消息列表（支持当前轮次带图）"""
         available_tools = toolhub.list_tools()
         tool_list_str = self._format_tools_description(available_tools)
         tool_usage_hints = self._format_tool_usage_hints(available_tools)
@@ -317,9 +324,15 @@ class AgentOrchestrator:
             tool_usage_hints=tool_usage_hints, tool_examples=tool_examples
         )
 
+        user_content = f"<question>{user_query}</question>"
+        if image_data:
+            user_content = [
+                {"type": "image_url", "image_url": {"url": image_data}},
+                {"type": "text", "text": user_content},
+            ]
         messages = [
             ChatMessage(role=MessageRole.SYSTEM, content=react_system_prompt),
-            ChatMessage(role=MessageRole.USER, content=f"<question>{user_query}</question>")
+            ChatMessage(role=MessageRole.USER, content=user_content)
         ]
 
         if selected_doc_ids:
@@ -385,6 +398,8 @@ class AgentOrchestrator:
                 "tool_name": tool_name,
                 "params": params
             })
+            # 避免用户误以为已结束：提示智能体仍在运行，后续还有步骤或最终回答
+            yield self._sse("agent_continuing", {"message": "本步骤已完成，正在准备下一步…"})
 
             async for chunk in self._handle_special_tool_result(tool_name, tool_result):
                 yield chunk
@@ -435,17 +450,28 @@ class AgentOrchestrator:
             return settings.AGENT_MODEL
         return None
 
-    def _build_chat_messages(self, history: list, system_prompt: str = None) -> list:
-        """构建聊天消息列表（始终带小研人设）"""
+    def _build_chat_messages(self, history: list, system_prompt: str = None, current_turn_image: str = None) -> list:
+        """构建聊天消息列表（始终带小研人设；当前轮次若有图则最后一轮用户消息为多模态）"""
         messages = []
         system_content = PERSONA_PROMPT
         if system_prompt:
             system_content = f"{PERSONA_PROMPT}\n\n{system_prompt}"
         messages.append(ChatMessage(role=MessageRole.SYSTEM, content=system_content))
-        for msg in history:
+        for i, msg in enumerate(history):
             try:
                 role = MessageRole(msg["role"])
-                messages.append(ChatMessage(role=role, content=msg["content"]))
+                content = msg["content"]
+                # 当前轮次用户消息且带图：构造 vision 格式 [image_url, text]
+                if (
+                    current_turn_image
+                    and role == MessageRole.USER
+                    and i == len(history) - 1
+                ):
+                    content = [
+                        {"type": "image_url", "image_url": {"url": current_turn_image}},
+                        {"type": "text", "text": content or ""},
+                    ]
+                messages.append(ChatMessage(role=role, content=content))
             except Exception:
                 pass
         return messages

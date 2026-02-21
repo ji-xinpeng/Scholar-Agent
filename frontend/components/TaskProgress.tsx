@@ -38,6 +38,8 @@ interface TaskProgressProps {
   stepThoughts?: Record<string, string>;
   timeline?: AgentTimelineEvent[];
   agentThought?: string;
+  /** 某一步刚完成、智能体仍在运行时的提示（避免用户误以为已结束） */
+  continuingMessage?: string;
 }
 
 /* ── Utility Components ── */
@@ -172,7 +174,7 @@ function StepRow({ step, thought }: { step: TaskStep; thought?: string }) {
 
 /* ── Main Component ── */
 
-export default function TaskProgress({ steps, stepThoughts = {}, timeline = [], agentThought = "" }: TaskProgressProps) {
+export default function TaskProgress({ steps, stepThoughts = {}, timeline = [], agentThought = "", continuingMessage = "" }: TaskProgressProps) {
   const [expanded, setExpanded] = useState(true);
 
   const thoughts = timeline.filter((e) => e.type === "thought").map((e) => (e as { type: "thought"; content: string }).content);
@@ -182,18 +184,26 @@ export default function TaskProgress({ steps, stepThoughts = {}, timeline = [], 
   if (!hasContent) return null;
 
   const doneCount = steps.filter((s) => s.status === "done").length;
-  const allDone = steps.length > 0 && doneCount === steps.length && !steps.some((s) => s.status === "running");
   const hasRunning = steps.some((s) => s.status === "running");
   const currentRunning = steps.find((s) => s.status === "running");
+  const betweenSteps = steps.length > 0 && doneCount > 0 && doneCount < steps.length && !hasRunning;
+  // 有「正在准备下一步」提示时，不视为全部完成，避免误以为已结束
+  const allDone = steps.length > 0 && doneCount === steps.length && !hasRunning && !continuingMessage;
 
-  // Header status line
+  // Header status line（优先：后端明确说「正在准备下一步」> 当前有步骤在执行 > 步骤间隙 > 全部完成）
   let statusText: string;
   let StatusIcon: React.ReactNode;
-  if (allDone) {
+  if (continuingMessage) {
+    statusText = continuingMessage;
+    StatusIcon = <Loader2 className="w-4 h-4 text-violet-500 animate-spin" />;
+  } else if (allDone) {
     statusText = `已完成 ${doneCount} 个步骤`;
     StatusIcon = <CheckCircle2 className="w-4 h-4 text-emerald-500" />;
   } else if (hasRunning && currentRunning) {
     statusText = currentRunning.action;
+    StatusIcon = <Loader2 className="w-4 h-4 text-violet-500 animate-spin" />;
+  } else if (betweenSteps) {
+    statusText = `步骤 ${doneCount}/${steps.length} 已完成，正在准备下一步…`;
     StatusIcon = <Loader2 className="w-4 h-4 text-violet-500 animate-spin" />;
   } else if (steps.length > 0) {
     statusText = `${doneCount}/${steps.length} 步骤`;

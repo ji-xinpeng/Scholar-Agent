@@ -1,4 +1,4 @@
-from typing import List, Optional, AsyncGenerator
+from typing import List, Optional, AsyncGenerator, Union
 from functools import lru_cache
 from openai import AsyncOpenAI
 from dataclasses import dataclass, field
@@ -18,7 +18,8 @@ class MessageRole(str, Enum):
 @dataclass
 class ChatMessage:
     role: MessageRole
-    content: str
+    """文本内容或多模态内容（如 [{"type":"image_url","image_url":{"url":"..."}}, {"type":"text","text":"..."}]）"""
+    content: Union[str, list]
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
 

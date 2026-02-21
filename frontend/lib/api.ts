@@ -42,6 +42,8 @@ export async function fetchSSEChat(
   onDone: () => void,
   documentIds?: string[],
   signal?: AbortSignal,
+  /** 当前轮次用户选中的图片（data URL），用于视觉问答 */
+  imageData?: string | null,
 ): Promise<string | null> {
   const body: any = {
     message,
@@ -52,7 +54,10 @@ export async function fetchSSEChat(
   if (documentIds && documentIds.length > 0) {
     body.document_ids = documentIds;
   }
-  
+  if (imageData) {
+    body.image_data = imageData;
+  }
+
   const res = await fetch(`${API_BASE}/chat/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -130,12 +135,18 @@ export async function createSession(userId?: string, mode = "normal") {
   return res.json();
 }
 
-export async function deleteSession(sessionId: string) {
-  await fetch(`${API_BASE}/chat/sessions/${sessionId}`, { method: "DELETE" });
+export async function deleteSession(sessionId: string, userId?: string) {
+  const uid = userId ?? getUserId();
+  const res = await fetch(`${API_BASE}/chat/sessions/${sessionId}?user_id=${uid}`, { method: "DELETE" });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail || "删除失败");
+  }
 }
 
-export async function getMessages(sessionId: string) {
-  const res = await fetch(`${API_BASE}/chat/sessions/${sessionId}/messages`);
+export async function getMessages(sessionId: string, userId?: string) {
+  const uid = userId ?? getUserId();
+  const res = await fetch(`${API_BASE}/chat/sessions/${sessionId}/messages?user_id=${uid}`);
   return res.json();
 }
 

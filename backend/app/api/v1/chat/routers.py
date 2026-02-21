@@ -49,6 +49,7 @@ async def chat(request: ChatRequest):
                     request.user_id,
                     request.message,
                     selected_doc_ids=request.document_ids,
+                    image_data=request.image_data,
                     llm_model=model
                 ):
                     yield chunk
@@ -59,6 +60,7 @@ async def chat(request: ChatRequest):
                     request.user_id,
                     request.message,
                     selected_doc_ids=request.document_ids,
+                    image_data=request.image_data,
                     llm_model=request.model
                 ):
                     yield chunk

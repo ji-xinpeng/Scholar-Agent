@@ -46,6 +46,8 @@ class ChatRequest(BaseModel):
     user_id: str = "default"
     deep_research: bool = False  # 深度研究模式：允许长时间多步骤规划和大规模搜索
     document_ids: Optional[List[str]] = None
+    """当前轮次用户上传的图片，data URL（data:image/xxx;base64,...）用于视觉问答"""
+    image_data: Optional[str] = None
     provider: Optional[str] = None  # LLM 提供商，如 "qwen", "deepseek"
     model: Optional[str] = None  # 模型名称，如 "qwen-turbo", "deepseek-chat"
 
