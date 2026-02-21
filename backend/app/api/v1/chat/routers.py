@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from app.schemas import ChatRequest, SessionCreate
 from app.application.services.agent_service import AgentService
@@ -9,6 +9,16 @@ import json
 
 router = APIRouter()
 agent_service = AgentService()
+
+
+def verify_session_ownership(session_id: str, user_id: str):
+    """验证用户是否拥有该会话的访问权限"""
+    session = agent_service.session_service.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if session["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="无权访问该会话")
+    return session
 
 
 @router.post("/chat")
@@ -23,13 +33,8 @@ async def chat(request: ChatRequest):
         logger.info(f"创建新会话: {session_id}")
     else:
         session_id = request.session_id
-        existing = agent_service.session_service.get_session(session_id)
-        if not existing:
-            session = agent_service.session_service.create_session(request.user_id, mode="agent")
-            session_id = session["id"]
-            logger.warning(f"会话 {request.session_id} 不存在，创建新会话: {session_id}")
-        else:
-            logger.debug(f"使用现有会话: {session_id}")
+        verify_session_ownership(session_id, request.user_id)
+        logger.debug(f"使用现有会话: {session_id}")
 
     history = agent_service.session_service.get_messages(session_id)
     logger.debug(f"加载 {len(history)} 条历史消息")
@@ -88,16 +93,18 @@ async def create_session(request: SessionCreate):
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str):
-    logger.warning(f"删除会话: {session_id}")
+async def delete_session(session_id: str, user_id: str = "default"):
+    logger.warning(f"删除会话 - 会话: {session_id}, 用户: {user_id}")
+    verify_session_ownership(session_id, user_id)
     agent_service.session_service.delete_session(session_id)
     logger.info(f"会话 {session_id} 删除成功")
     return {"status": "ok"}
 
 
 @router.get("/sessions/{session_id}/messages")
-async def get_messages(session_id: str):
-    logger.debug(f"获取会话消息 - 会话: {session_id}")
+async def get_messages(session_id: str, user_id: str = "default"):
+    logger.debug(f"获取会话消息 - 会话: {session_id}, 用户: {user_id}")
+    verify_session_ownership(session_id, user_id)
     messages = agent_service.session_service.get_messages(session_id)
     logger.info(f"找到会话 {session_id} 的 {len(messages)} 条消息")
     return {"messages": messages}
