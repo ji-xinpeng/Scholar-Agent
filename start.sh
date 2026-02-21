@@ -14,10 +14,10 @@ cd ..
 # 等待一下
 sleep 2
 
-# 启动前端
+# 启动前端（直连后端以支持聊天流式输出，避免 Next 代理缓冲）
 echo "启动前端..."
 cd frontend
-npm run dev &
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8088 npm run dev &
 FRONTEND_PID=$!
 cd ..
 

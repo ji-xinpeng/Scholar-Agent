@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     # 后端端口
     BACKEND_PORT: int = 8088
 
-    # Redis
+    # Redis（可选，未启用或连接失败时自动使用内存缓存）
+    REDIS_ENABLED: bool = False  # 默认不依赖 Redis，设为 True 且启动 Redis 后可启用
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0

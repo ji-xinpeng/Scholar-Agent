@@ -1,5 +1,6 @@
 from typing import Dict, Any
 from app.tools.base import BaseTool
+from app.application.agent.persona import PERSONA_PROMPT
 from app.infrastructure.llm.service import MessageRole, ChatMessage, llm_service
 from app.infrastructure.logging.config import logger
 
@@ -105,12 +106,15 @@ class SummarizeTool(BaseTool):
                 knowledge_desc = "请使用专业术语，重点突出技术创新和方法论"
             else:
                 knowledge_desc = ""
-            
+
             prompt = f"""请对以下内容进行{style_desc}的综合总结，不超过{max_length}字。{knowledge_desc}
             {content}
             """
 
-            messages = [ChatMessage(role=MessageRole.USER, content=prompt)]
+            messages = [
+                ChatMessage(role=MessageRole.SYSTEM, content=PERSONA_PROMPT),
+                ChatMessage(role=MessageRole.USER, content=prompt),
+            ]
             response = await llm_service.chat(messages, temperature=0.3, max_tokens=max_length * 2)
             
             return {

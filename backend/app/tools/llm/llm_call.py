@@ -6,6 +6,7 @@ from typing import Dict, Any
 from app.tools.base import BaseTool
 from app.infrastructure.llm.service import MessageRole, ChatMessage, llm_service
 from app.infrastructure.logging.config import logger
+from app.application.agent.persona import PERSONA_PROMPT
 
 
 class LLMCallTool(BaseTool):
@@ -37,8 +38,8 @@ class LLMCallTool(BaseTool):
         max_tokens = kwargs.get("max_tokens")
 
         messages = []
-        if system_prompt:
-            messages.append(ChatMessage(role=MessageRole.SYSTEM, content=system_prompt))
+        system_content = f"{PERSONA_PROMPT}\n\n{system_prompt}" if system_prompt else PERSONA_PROMPT
+        messages.append(ChatMessage(role=MessageRole.SYSTEM, content=system_content))
         messages.append(ChatMessage(role=MessageRole.USER, content=prompt))
 
         try:

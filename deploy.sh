@@ -58,7 +58,7 @@ if [ -d "$PROJECT_DIR" ]; then
         git fetch origin
         git checkout $BRANCH
         git reset --hard origin/$BRANCH
-        git clean -fd
+        # 不使用 git clean -fd，避免删除 backend/data/（数据库、上传文件、日志等会保留）
     else
         echo "目录存在但不是Git仓库，重新克隆..."
         cd ..

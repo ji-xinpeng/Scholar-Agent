@@ -1,6 +1,7 @@
 from typing import Dict, Any, List
 from app.tools.base import BaseTool
 from app.application.services.document_service import document_service
+from app.application.agent.persona import PERSONA_PROMPT
 from app.infrastructure.llm.service import MessageRole, ChatMessage, llm_service
 from app.infrastructure.logging.config import logger
 
@@ -21,6 +22,7 @@ class MultiModalRAGTool(BaseTool):
         document_ids = kwargs.get("document_ids", [])
         top_k = kwargs.get("top_k", 5)
         user_id = kwargs.get("user_id", "")
+        extra_system_prompt = (kwargs.get("extra_system_prompt") or "").strip()
         
         if not query:
             return {
@@ -75,7 +77,13 @@ class MultiModalRAGTool(BaseTool):
 
             用户问题: {query}
             """
-            messages = [ChatMessage(role=MessageRole.USER, content=prompt)]
+            system_content = PERSONA_PROMPT
+            if extra_system_prompt:
+                system_content = f"{PERSONA_PROMPT}\n\n{extra_system_prompt}"
+            messages = [
+                ChatMessage(role=MessageRole.SYSTEM, content=system_content),
+                ChatMessage(role=MessageRole.USER, content=prompt),
+            ]
             response = await llm_service.chat(messages, temperature=0.7)
             
             return {

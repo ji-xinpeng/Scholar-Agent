@@ -32,7 +32,11 @@ class CacheManager:
         return cls._instance
 
     def _init(self):
-        """初始化缓存管理器"""
+        """初始化缓存管理器（Redis 可选，未启用或连接失败时使用内存缓存）"""
+        if not getattr(settings, "REDIS_ENABLED", False):
+            logger.info("Redis 未启用，使用内存缓存")
+            self._redis_client = None
+            return
         try:
             self._redis_client = redis.Redis(
                 host=settings.REDIS_HOST,
@@ -46,7 +50,8 @@ class CacheManager:
             self._redis_client.ping()
             logger.info(f"Redis 缓存已连接: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
         except Exception as e:
-            logger.warning(f"Redis 连接失败，使用内存缓存: {e}")
+            logger.debug(f"Redis 连接失败: {e}")
+            logger.info("Redis 未连接，使用内存缓存")
             self._redis_client = None
 
     def _generate_key(self, prefix: str, *args, **kwargs) -> str:

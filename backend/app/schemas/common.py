@@ -118,6 +118,23 @@ class UserProfileUpdate(BaseModel):
     model_mode: Optional[str] = None
 
 
+# ========== 登录 ==========
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    confirm_password: str
+
+
+class AuthResponse(BaseModel):
+    user_id: str
+    username: str
+
+
 # ========== SSE事件 ==========
 class SSEEvent(BaseModel):
     type: str

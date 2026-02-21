@@ -12,6 +12,9 @@ from app.schemas.common import (
     FolderListResponse,
     UserProfile,
     UserProfileUpdate,
+    LoginRequest,
+    RegisterRequest,
+    AuthResponse,
     SSEEvent,
 )
 
@@ -29,5 +32,8 @@ __all__ = [
     "FolderListResponse",
     "UserProfile",
     "UserProfileUpdate",
+    "LoginRequest",
+    "RegisterRequest",
+    "AuthResponse",
     "SSEEvent",
 ]

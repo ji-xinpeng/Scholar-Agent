@@ -89,6 +89,12 @@ def _init_tables(db: sqlite3.Connection):
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS auth_users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
         CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id);

@@ -1,8 +1,9 @@
 """
 ReAct 模式的 System Prompt
 """
+from app.application.agent.persona import PERSONA_PROMPT
 
-REACT_SYSTEM_PROMPT = """你是一位专业的学术研究助手。你需要通过思考、行动、观察的循环来解决用户的问题。
+REACT_SYSTEM_PROMPT = """你需要通过思考、行动、观察的循环来解决用户的问题。
 
 ## 用户资料
 
@@ -101,5 +102,4 @@ def get_react_system_prompt(
         tool_usage_hints=tool_usage_hints,
         tool_examples=tool_examples
     )
-    
-    return prompt
+    return f"{PERSONA_PROMPT}\n\n{prompt}"

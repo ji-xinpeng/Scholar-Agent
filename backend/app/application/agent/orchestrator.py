@@ -10,7 +10,9 @@ from app.tools.toolhub import toolhub
 from app.application.services.session_service import session_service
 from app.application.services.user_service import user_service
 from app.application.agent.react_prompt import get_react_system_prompt
+from app.application.agent.persona import PERSONA_PROMPT
 from app.application.agent.intent_analyzer import intent_analyzer, ChatIntent
+from app.application.agent.intent_prompts import get_intent_prompt
 from app.core.config import settings
 
 
@@ -48,16 +50,22 @@ class AgentOrchestrator:
 
             yield self._sse("thinking", {"message": "正在分析意图..."})
 
-            intent = await intent_analyzer.analyze(user_query, has_selected_docs=has_docs)
-            logger.info(f"意图识别结果: {intent}, Query: {user_query}")
+            intent_result = await intent_analyzer.analyze(user_query, has_selected_docs=has_docs)
+            intent = intent_result.intent
+            task_type = intent_result.task_type
+            logger.info(f"意图识别结果: intent={intent}, task_type={task_type}, Query: {user_query}")
+
+            # 根据任务类型追加意图相关 prompt，使回答更贴合用户需求
+            intent_prompt = get_intent_prompt(task_type)
+            combined_system_prompt = (intent_prompt + "\n\n" + system_prompt) if (intent_prompt and system_prompt) else (intent_prompt or system_prompt)
 
             final_model = llm_model or self._get_model_for_intent(intent)
-            logger.info(f"意图: {intent}, 使用模型: {final_model}")
+            logger.info(f"意图: {intent}, task_type: {task_type}, 使用模型: {final_model}")
 
             if intent == ChatIntent.PAPER_QA:
                 yield self._sse("thinking", {"message": "已切换至文档问答模式"})
                 async for chunk in self.run_paper_qa_chat(
-                    session_id, user_id, user_query, selected_doc_ids, system_prompt,
+                    session_id, user_id, user_query, selected_doc_ids, combined_system_prompt,
                     final_model, llm_temperature, llm_max_tokens, llm_top_p, **llm_kwargs
                 ):
                     yield chunk
@@ -65,7 +73,7 @@ class AgentOrchestrator:
             elif intent == ChatIntent.AGENT:
                 yield self._sse("thinking", {"message": "任务较复杂，已切换至智能体模式"})
                 async for chunk in self.run_agent_chat(
-                    session_id, user_id, user_query, selected_doc_ids, system_prompt,
+                    session_id, user_id, user_query, selected_doc_ids, combined_system_prompt,
                     final_model, llm_temperature, llm_max_tokens, llm_top_p, **llm_kwargs
                 ):
                     yield chunk
@@ -73,7 +81,7 @@ class AgentOrchestrator:
             else:
                 logger.info(f"简单对话，使用经济模型: {final_model}")
                 async for chunk in self.run_normal_chat(
-                    session_id, user_id, user_query, selected_doc_ids, system_prompt,
+                    session_id, user_id, user_query, selected_doc_ids, combined_system_prompt,
                     enable_search=False, model=final_model
                 ):
                     yield chunk
@@ -145,7 +153,8 @@ class AgentOrchestrator:
                 "MultiModalRAGTool",
                 query=user_query,
                 document_ids=selected_doc_ids or [],
-                user_id=user_id
+                user_id=user_id,
+                extra_system_prompt=system_prompt,
             )
 
             if not rag_result or not rag_result.get("success"):
@@ -427,10 +436,12 @@ class AgentOrchestrator:
         return None
 
     def _build_chat_messages(self, history: list, system_prompt: str = None) -> list:
-        """构建聊天消息列表"""
+        """构建聊天消息列表（始终带小研人设）"""
         messages = []
+        system_content = PERSONA_PROMPT
         if system_prompt:
-            messages.append(ChatMessage(role=MessageRole.SYSTEM, content=system_prompt))
+            system_content = f"{PERSONA_PROMPT}\n\n{system_prompt}"
+        messages.append(ChatMessage(role=MessageRole.SYSTEM, content=system_content))
         for msg in history:
             try:
                 role = MessageRole(msg["role"])
