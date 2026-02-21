@@ -1,5 +1,4 @@
 const API_BASE = "/api/v1";
-const BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8088";
 
 // ========== 聊天 / 会话 ==========
 export async function fetchSSEChat(
@@ -21,7 +20,7 @@ export async function fetchSSEChat(
     body.document_ids = documentIds;
   }
   
-  const res = await fetch(`${BACKEND_BASE}/api/v1/chat/chat`, {
+  const res = await fetch(`${API_BASE}/chat/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
