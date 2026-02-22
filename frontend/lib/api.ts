@@ -1,8 +1,17 @@
-// 本地开发时设置 NEXT_PUBLIC_BACKEND_URL 可直连后端，避免经 Next 代理缓冲导致 SSE 不流式
-const API_BASE =
-  typeof process !== "undefined" && process.env.NEXT_PUBLIC_BACKEND_URL
-    ? `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/v1`
-    : "/api/v1";
+// 生产环境必须用相对路径 /api/v1，否则构建时未设置 NEXT_PUBLIC_BACKEND_URL 会变成 "undefined" 导致请求 404
+function getApiBase(): string {
+  if (typeof window !== "undefined") {
+    return "/api/v1";
+  }
+  const url = typeof process !== "undefined" && process.env.NEXT_PUBLIC_BACKEND_URL
+    ? String(process.env.NEXT_PUBLIC_BACKEND_URL).trim()
+    : "";
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    return `${url.replace(/\/$/, "")}/api/v1`;
+  }
+  return "/api/v1";
+}
+const API_BASE = getApiBase();
 
 import { getUserId } from "./auth";
 

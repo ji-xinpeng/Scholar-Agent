@@ -59,6 +59,7 @@ export default function ChatPage() {
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const [lastCost, setLastCost] = useState<{cost: number; balance: number} | null>(null);
   const [costError, setCostError] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
 
@@ -450,6 +451,7 @@ export default function ChatPage() {
     setIsLoading(true);
     setStreamingContent("");
     setCostError(null);
+    setChatError(null);
     setLastCost(null);
 
     setTaskSteps([]);
@@ -662,6 +664,9 @@ export default function ChatPage() {
         setSelectedDocumentIds([]);
       } else if (err?.status === 402 || err?.message?.includes("402")) {
         setCostError(err?.detail?.message || "额度不足，请充值后重试。");
+      } else {
+        const msg = err?.message || err?.detail?.message || "请求失败，请检查网络或稍后重试";
+        setChatError(msg);
       }
     }
   };
@@ -1083,6 +1088,13 @@ export default function ChatPage() {
                 <span className="flex-1">{costError}</span>
                 <a href="/profile" className="text-red-600 underline font-medium shrink-0">去充值</a>
                 <button onClick={() => setCostError(null)} className="p-1 text-red-400 hover:text-red-600 hover:bg-red-100 rounded-lg transition-colors">×</button>
+              </div>
+            )}
+            {chatError && (
+              <div className="mb-3 flex items-center gap-2 p-3.5 bg-amber-50/90 border border-amber-200/80 rounded-2xl text-sm text-amber-800 shadow-sm">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span className="flex-1">{chatError}</span>
+                <button onClick={() => setChatError(null)} className="p-1 text-amber-600 hover:text-amber-800 hover:bg-amber-100 rounded-lg transition-colors">×</button>
               </div>
             )}
             
